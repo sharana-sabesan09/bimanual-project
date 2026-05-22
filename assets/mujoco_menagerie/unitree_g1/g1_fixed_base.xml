@@ -58,7 +58,6 @@
     <mesh file="right_wrist_roll_link.STL"/>
     <mesh file="right_wrist_pitch_link.STL"/>
     <mesh file="right_wrist_yaw_link.STL"/>
-    <mesh file="right_rubber_hand.STL"/>
   </asset>
 
   <worldbody>
@@ -283,10 +282,10 @@
                             mass="0.254576" diaginertia="0.000646113 0.000559993 0.000147566"/>
                           <joint name="right_wrist_yaw_joint" axis="0 0 1" range="-1.61443 1.61443"
                             actuatorfrcrange="-5 5"/>
-                          <!-- TODO: instead of the "right rubber hand, delete that hand and instead have a rectangle mesh here as the tray" -->
-                          <geom class="visual" mesh="right_wrist_yaw_link"/>
                           <geom class="collision" mesh="right_wrist_yaw_link"/>
-                          <geom pos="0.0415 -0.003 0" quat="1 0 0 0" class="visual" mesh="right_rubber_hand"/>
+                          <body name="tray" pos="0.20 0 0">
+                            <geom name="tray" type="box" size="0.18 0.13 0.005" rgba="0.8 0.6 0.3 1" density="454.5"/>
+                          </body>
                         </body>
                       </body>
                     </body>

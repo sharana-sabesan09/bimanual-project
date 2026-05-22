@@ -23,6 +23,7 @@ Standing pose from the MuJoCo Menagerie "stand" keyframe:
 
 import os
 import numpy as np
+import torch
 import genesis as gs
 
 # ─── paths ────────────────────────────────────────────────────────────────────
@@ -32,11 +33,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 G1_XML = os.path.join(_HERE, "assets", "mujoco_menagerie", "unitree_g1", "g1_fixed_base.xml")
 
 # ─── tray / ball geometry ────────────────────────────────────────────────────
-TRAY_SIZE   = (0.30, 0.22, 0.01)   # 30 cm × 22 cm × 1 cm
-TRAY_OFFSET = (0.12, 0.0, 0.0)     # forward along wrist x-axis
-BALL_RADIUS = 0.04                  # 4 cm
+TRAY_SIZE   = (0.36, 0.26, 0.01)   # 36 cm × 26 cm × 1 cm (defined in MJCF; kept here for ball spawn offset)
+BALL_RADIUS = 0.03                  # 3 cm
 BALL_MASS   = 0.1                   # kg
-TRAY_MASS   = 0.3                   # kg
 
 # ─── joint name groups ────────────────────────────────────────────────────────
 LEFT_LEG_JOINTS = [
@@ -76,12 +75,12 @@ RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.f
 
 class BallBalanceEnv:
     """
-    Non-batched single-environment wrapper for prototyping.
+    Batched environment wrapper. Supports n_envs parallel simulations.
     Legs/waist/left-arm are PD-frozen at the standing pose each step.
     Only the 7 right-arm joints are exposed as the RL action.
     """
 
-    def __init__(self, show_viewer: bool = True):
+    def __init__(self, show_viewer: bool = True, n_envs: int = 1):
         # TODO select cuda is available otherwise fallback to cpu
         gs.init(backend=gs.cpu)
 
@@ -103,22 +102,6 @@ class BallBalanceEnv:
             gs.morphs.MJCF(file=G1_XML, pos=(0.0, 0.0, 0.79)),
         )
 
-        # Tray welded to right wrist
-        # TODO we should do this in the MJCF instead. Just delete the inspire hand and add a box mesh
-        self.tray = self.scene.add_entity(
-            gs.morphs.Box(
-                size=TRAY_SIZE,
-                pos=TRAY_OFFSET,
-                fixed=False,
-                batch_fixed_verts=True,
-            ),
-            material=gs.materials.Rigid(
-                rho=TRAY_MASS / (TRAY_SIZE[0] * TRAY_SIZE[1] * TRAY_SIZE[2])
-            ),
-            surface=gs.surfaces.Default(color=(0.8, 0.6, 0.3, 1.0)),
-        )
-        self.tray.attach(self.robot, parent_link_name="right_wrist_yaw_link")
-
         self.ball = self.scene.add_entity(
             gs.morphs.Sphere(radius=BALL_RADIUS, pos=(0.0, 0.0, 1.5)),
             material=gs.materials.Rigid(
@@ -127,7 +110,7 @@ class BallBalanceEnv:
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
 
-        self.scene.build()
+        self.scene.build(n_envs=n_envs)
         self._cache_dof_indices()
         self.n_arm_dofs = len(self._right_arm_dofs)
         self.reset()
@@ -176,14 +159,14 @@ class BallBalanceEnv:
         return self.get_obs()
 
     def _reset_ball(self):
-        tray_pos = self.tray.get_link("box_baselink").get_pos()
-        ball_z   = float(tray_pos[2]) + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005
-        spawn    = np.array([float(tray_pos[0]), float(tray_pos[1]), ball_z], dtype=np.float32)
+        tray_pos = self.robot.get_link("tray").get_pos()          # (b, 3)
+        ball_z   = tray_pos[:, 2:3] + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005  # (b, 1)
+        spawn    = torch.cat([tray_pos[:, :2], ball_z], dim=-1)          # (b, 3)
         self.ball.set_pos(spawn, zero_velocity=True)
 
     def step(self, action: np.ndarray):
         """
-        action : (7,) position targets (rad) for the right arm.
+        action : (b, 7) position targets (rad) for the right arm.
         Returns (obs, reward, done, info).
         """
         # Hold legs / waist / left arm at standing pose every step
@@ -208,23 +191,24 @@ class BallBalanceEnv:
     def get_obs(self):
         """
         Flat vector:
-          right_arm_pos  (7,)   — joint positions
-          right_arm_vel  (7,)   — joint velocities
-          ball_pos       (3,)
-          ball_vel       (3,)
-          goal_pos       (3,)   — tray centre in world frame
+          right_arm_pos  (b, 7)   — joint positions
+          right_arm_vel  (b, 7)   — joint velocities
+          ball_pos       (b, 3)
+          ball_vel       (b, 3)
+          goal_pos       (b, 3)   — tray centre in world frame
+        Returns (b, 23).
         """
         arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
         arm_vel  = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
         ball_pos = self.ball.get_pos()
         ball_vel = self.ball.get_vel()
-        goal_pos = self.tray.get_link("box_baselink").get_pos()
-        return np.concatenate([arm_pos, arm_vel, ball_pos, ball_vel, goal_pos])
+        goal_pos = self.robot.get_link("tray").get_pos()
+        return torch.cat([arm_pos, arm_vel, ball_pos, ball_vel, goal_pos], dim=-1)
 
     def _unpack_obs(self, obs):
-        ball_pos = obs[14:17]
-        ball_vel = obs[17:20]
-        goal_pos = obs[20:23]
+        ball_pos = obs[:, 14:17]
+        ball_vel = obs[:, 17:20]
+        goal_pos = obs[:, 20:23]
         return ball_pos, ball_vel, goal_pos
 
     # ── reward ────────────────────────────────────────────────────────────────
@@ -236,11 +220,11 @@ class BallBalanceEnv:
           - 0.1 * ball_speed          discourage erratic motion
           - 10  if ball falls off     large terminal penalty
         """
-        xy_dist   = float(np.linalg.norm(ball_pos[:2] - goal_pos[:2]))
-        proximity = np.exp(-3.0 * xy_dist)
-        vel_pen   = -0.1 * float(np.linalg.norm(ball_vel))
-        fallen    = float(ball_pos[2]) < (float(goal_pos[2]) - 0.15)
-        fall_pen  = -10.0 if fallen else 0.0
+        xy_dist   = torch.norm(ball_pos[:, :2] - goal_pos[:, :2], dim=-1)  # (b,)
+        proximity = torch.exp(-3.0 * xy_dist)                              # (b,)
+        vel_pen   = -0.1 * torch.norm(ball_vel, dim=-1)                    # (b,)
+        fallen    = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)              # (b,)
+        fall_pen  = torch.where(fallen, torch.full_like(proximity, -10.0), torch.zeros_like(proximity))
         return proximity + vel_pen + fall_pen, fallen
 
 
@@ -259,8 +243,7 @@ if __name__ == "__main__":
         env.scene.step()
 
 
-# TODO tasks 
-# "unbatch everything" rn you are doing ex: pos[0] which stripes the shape from (b,3) -> (3) this is incorrect we should keep everything batched
+# TODO tasks
 # change the MJCF to have the tray directly attached as the hand, removing the hand visual entirely
 # put this env as its own file and have extra targets 
 # 1. zero agent, spawns the env and gives all 0's as actions 
