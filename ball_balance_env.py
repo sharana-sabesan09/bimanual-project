@@ -82,6 +82,7 @@ class BallBalanceEnv:
     """
 
     def __init__(self, show_viewer: bool = True):
+        # TODO select cuda is available otherwise fallback to cpu
         gs.init(backend=gs.cpu)
 
         self.scene = gs.Scene(
@@ -103,6 +104,7 @@ class BallBalanceEnv:
         )
 
         # Tray welded to right wrist
+        # TODO we should do this in the MJCF instead. Just delete the inspire hand and add a box mesh
         self.tray = self.scene.add_entity(
             gs.morphs.Box(
                 size=TRAY_SIZE,
@@ -133,6 +135,7 @@ class BallBalanceEnv:
     # ── setup ─────────────────────────────────────────────────────────────────
 
     def _cache_dof_indices(self):
+        # TODO this is cooked its bad to manually unbatch
         def dof(name):
             return self.robot.get_joint(name).dofs_idx_local[0]
 
@@ -253,3 +256,6 @@ if __name__ == "__main__":
         env.robot.control_dofs_position(all_frozen_pos, dofs_idx_local=all_frozen_dofs)
         env._reset_ball()   # keep ball on tray while viewing
         env.scene.step()
+
+
+# TODO we shouldnt call a submodule
