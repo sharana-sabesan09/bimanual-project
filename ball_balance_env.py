@@ -228,25 +228,13 @@ class BallBalanceEnv:
         return proximity + vel_pen + fall_pen, fallen
 
 
-# ─── quick visualisation / sanity check ──────────────────────────────────────
 if __name__ == "__main__":
-    env = BallBalanceEnv(show_viewer=True)
-
-    # Freeze every joint — legs, waist, left arm, and right arm all held static
-    all_frozen_dofs = env._frozen_dofs + env._right_arm_dofs
-    all_frozen_pos  = np.concatenate([env._frozen_pos, RIGHT_ARM_HOLD_POS])
-
-    while True:
-        env.robot.control_dofs_position(all_frozen_pos, dofs_idx_local=all_frozen_dofs)
-        env._reset_ball()   # keep ball on tray while viewing
-        
-        env.scene.step()
-
+    print("this cannot be run standalone")
 
 # TODO tasks
-# change the MJCF to have the tray directly attached as the hand, removing the hand visual entirely
-# put this env as its own file and have extra targets 
-# 1. zero agent, spawns the env and gives all 0's as actions 
-# 2. random agent, spawns the env and gives random actions at each step 
+# [done] change the MJCF to have the tray directly attached as the hand, removing the hand visual entirely
 # 3. teleop agent, spawns the env and with keyboard input to control hand behavior wasd for xyz and ijkl for pitch,yaw,roll
 # 4. train agent, connects the env with RSL rl for training
+# LOWER max joint velocities substantially
+# probably also lower max joint torque
+# add regularization terms in reward
