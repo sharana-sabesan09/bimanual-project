@@ -81,9 +81,6 @@ class BallBalanceEnv:
     """
 
     def __init__(self, show_viewer: bool = True, n_envs: int = 1):
-        # TODO select cuda is available otherwise fallback to cpu
-        gs.init(backend=gs.cpu)
-
         self.scene = gs.Scene(
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(2.5, -2.5, 2.0),
@@ -140,29 +137,31 @@ class BallBalanceEnv:
 
     # ── reset / step ──────────────────────────────────────────────────────────
 
-    def reset(self):
-        # Snap frozen joints to standing pose (zero velocity)
+    def reset(self, envs_idx=None):
         self.robot.set_dofs_position(
             self._frozen_pos,
             dofs_idx_local=self._frozen_dofs,
             zero_velocity=True,
+            envs_idx=envs_idx,
         )
-        # Snap right arm to hold pose (zero velocity)
         self.robot.set_dofs_position(
             RIGHT_ARM_HOLD_POS,
             dofs_idx_local=self._right_arm_dofs,
             zero_velocity=True,
+            envs_idx=envs_idx,
         )
-        # Place ball just above the tray centre
-        self._reset_ball()
-        self.scene.step()
+        self._reset_ball(envs_idx=envs_idx)
+        if envs_idx is None:
+            self.scene.step()
         return self.get_obs()
 
-    def _reset_ball(self):
-        tray_pos = self.robot.get_link("tray").get_pos()          # (b, 3)
-        ball_z   = tray_pos[:, 2:3] + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005  # (b, 1)
-        spawn    = torch.cat([tray_pos[:, :2], ball_z], dim=-1)          # (b, 3)
-        self.ball.set_pos(spawn, zero_velocity=True)
+    def _reset_ball(self, envs_idx=None):
+        tray_pos = self.robot.get_link("tray").get_pos()  # (b, 3)
+        if envs_idx is not None:
+            tray_pos = tray_pos[envs_idx]
+        ball_z = tray_pos[:, 2:3] + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005
+        spawn = torch.cat([tray_pos[:, :2], ball_z], dim=-1)
+        self.ball.set_pos(spawn, zero_velocity=True, envs_idx=envs_idx)
 
     def step(self, action: np.ndarray):
         """

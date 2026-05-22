@@ -4,12 +4,14 @@ Actions are drawn from [-1, 1] rad, roughly spanning the wrist/elbow range.
 """
 
 import numpy as np
+import genesis as gs
 from ball_balance_env import BallBalanceEnv
 
 ACTION_LOW  = -1.0
 ACTION_HIGH =  1.0
 
 if __name__ == "__main__":
+    gs.init(backend=gs.cpu)
     env = BallBalanceEnv(show_viewer=True, n_envs=1)
     obs = env.reset()
 

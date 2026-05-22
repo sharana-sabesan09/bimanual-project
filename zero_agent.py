@@ -4,9 +4,11 @@ The arm will collapse from the hold pose toward zero (shoulder down, elbow strai
 """
 
 import numpy as np
+import genesis as gs
 from ball_balance_env import BallBalanceEnv
 
 if __name__ == "__main__":
+    gs.init(backend=gs.cpu)
     env = BallBalanceEnv(show_viewer=True, n_envs=1)
     obs = env.reset()
     action = np.zeros((1, env.n_arm_dofs), dtype=np.float32)

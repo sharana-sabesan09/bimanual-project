@@ -1,0 +1,3 @@
+tensordict
+tensorboard
+rsl-rl-lib>=5.0.0
