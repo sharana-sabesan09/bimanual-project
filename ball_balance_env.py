@@ -204,7 +204,7 @@ class BallBalanceEnv:
         return obs, reward, done, {}
 
     # ── observations ──────────────────────────────────────────────────────────
-
+    
     def get_obs(self):
         """
         Flat vector:
@@ -255,7 +255,15 @@ if __name__ == "__main__":
     while True:
         env.robot.control_dofs_position(all_frozen_pos, dofs_idx_local=all_frozen_dofs)
         env._reset_ball()   # keep ball on tray while viewing
+        
         env.scene.step()
 
 
-# TODO we shouldnt call a submodule
+# TODO tasks 
+# "unbatch everything" rn you are doing ex: pos[0] which stripes the shape from (b,3) -> (3) this is incorrect we should keep everything batched
+# change the MJCF to have the tray directly attached as the hand, removing the hand visual entirely
+# put this env as its own file and have extra targets 
+# 1. zero agent, spawns the env and gives all 0's as actions 
+# 2. random agent, spawns the env and gives random actions at each step 
+# 3. teleop agent, spawns the env and with keyboard input to control hand behavior wasd for xyz and ijkl for pitch,yaw,roll
+# 4. train agent, connects the env with RSL rl for training
