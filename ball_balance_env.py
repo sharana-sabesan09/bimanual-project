@@ -174,6 +174,8 @@ class BallBalanceEnv:
             self._frozen_pos,
             dofs_idx_local=self._frozen_dofs,
         )
+        # TODO: we should normalize action by the max and min range
+        # so input of action is between -1 and 1 but here inside step it scales it by the max and min values of the joint range
         # Apply RL action to right arm
         self.robot.control_dofs_position(
             action.astype(np.float32),
