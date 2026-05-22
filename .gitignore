@@ -10,3 +10,5 @@ runs/
 logs/
 *.pt
 *.pth
+
+.vscode/
