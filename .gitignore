@@ -12,3 +12,4 @@ logs/
 *.pth
 
 .vscode/
+.claude/
