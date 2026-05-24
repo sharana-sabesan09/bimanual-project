@@ -71,6 +71,7 @@ STAND_LEFT_ARM_POS = np.array([0.2,  0.2, 0.0, 1.28, 0.0, 0.0, 0.0], dtype=np.fl
 # tray is roughly horizontal (~42 cm in front, chest/shoulder height).
 # Derived empirically: pitch=-0.7 lifts arm forward, wrist_pitch=-0.6 levels tray.
 RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
+LEFT_ARM_HOLD_POS  = np.array([-0.7,  0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
 
 
 class BallBalanceEnv:
@@ -109,7 +110,7 @@ class BallBalanceEnv:
 
         self.scene.build(n_envs=n_envs)
         self._cache_dof_indices()
-        self.n_arm_dofs = len(self._right_arm_dofs)
+        self.n_arm_dofs = len(self._both_arm_dofs)  # 14 for both arms
         self.reset()
 
     # ── setup ─────────────────────────────────────────────────────────────────
@@ -125,15 +126,15 @@ class BallBalanceEnv:
         self._left_arm_dofs   = [dof(n) for n in LEFT_ARM_JOINTS]
         self._right_arm_dofs  = [dof(n) for n in RIGHT_ARM_JOINTS]
 
-        # All frozen joints together (legs + waist + left arm)
+        # Frozen: legs + waist only. Both arms active.
         self._frozen_dofs = (
-            self._left_leg_dofs + self._right_leg_dofs +
-            self._waist_dofs + self._left_arm_dofs
+            self._left_leg_dofs + self._right_leg_dofs + self._waist_dofs
         )
         self._frozen_pos = np.concatenate([
-            STAND_LEG_POS, STAND_LEG_POS,
-            STAND_WAIST_POS, STAND_LEFT_ARM_POS,
+            STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS,
         ])
+        # Both arms combined for a single control call in step()
+        self._both_arm_dofs = self._right_arm_dofs + self._left_arm_dofs
 
     # ── reset / step ──────────────────────────────────────────────────────────
 
@@ -147,6 +148,12 @@ class BallBalanceEnv:
         self.robot.set_dofs_position(
             RIGHT_ARM_HOLD_POS,
             dofs_idx_local=self._right_arm_dofs,
+            zero_velocity=True,
+            envs_idx=envs_idx,
+        )
+        self.robot.set_dofs_position(
+            LEFT_ARM_HOLD_POS,
+            dofs_idx_local=self._left_arm_dofs,
             zero_velocity=True,
             envs_idx=envs_idx,
         )
@@ -165,20 +172,18 @@ class BallBalanceEnv:
 
     def step(self, action: np.ndarray):
         """
-        action : (b, 7) position targets (rad) for the right arm.
+        action : (b, 14) position targets (rad) — right arm (7) then left arm (7).
         Returns (obs, reward, done, info).
         """
-        # Hold legs / waist / left arm at standing pose every step
         self.robot.control_dofs_position(
             self._frozen_pos,
             dofs_idx_local=self._frozen_dofs,
         )
-        # TODO: we should normalize action by the max and min range
-        # so input of action is between -1 and 1 but here inside step it scales it by the max and min values of the joint range
-        # Apply RL action to right arm
+        # TODO: normalize action to [-1, 1] range
+        # action[:, :7] = right arm, action[:, 7:] = left arm
         self.robot.control_dofs_position(
             action.astype(np.float32),
-            dofs_idx_local=self._right_arm_dofs,
+            dofs_idx_local=self._both_arm_dofs,
         )
         self.scene.step()
 
@@ -192,24 +197,28 @@ class BallBalanceEnv:
     def get_obs(self):
         """
         Flat vector:
-          right_arm_pos  (b, 7)   — joint positions
-          right_arm_vel  (b, 7)   — joint velocities
+          right_arm_pos  (b, 7)
+          right_arm_vel  (b, 7)
+          left_arm_pos   (b, 7)
+          left_arm_vel   (b, 7)
           ball_pos       (b, 3)
           ball_vel       (b, 3)
           goal_pos       (b, 3)   — tray centre in world frame
-        Returns (b, 23).
+        Returns (b, 37).
         """
-        arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
-        arm_vel  = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
+        r_pos    = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
+        r_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
+        l_pos    = self.robot.get_dofs_position(dofs_idx_local=self._left_arm_dofs)
+        l_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._left_arm_dofs)
         ball_pos = self.ball.get_pos()
         ball_vel = self.ball.get_vel()
         goal_pos = self.robot.get_link("tray").get_pos()
-        return torch.cat([arm_pos, arm_vel, ball_pos, ball_vel, goal_pos], dim=-1)
+        return torch.cat([r_pos, r_vel, l_pos, l_vel, ball_pos, ball_vel, goal_pos], dim=-1)
 
     def _unpack_obs(self, obs):
-        ball_pos = obs[:, 14:17]
-        ball_vel = obs[:, 17:20]
-        goal_pos = obs[:, 20:23]
+        ball_pos = obs[:, 28:31]
+        ball_vel = obs[:, 31:34]
+        goal_pos = obs[:, 34:37]
         return ball_pos, ball_vel, goal_pos
 
     # ── reward ────────────────────────────────────────────────────────────────

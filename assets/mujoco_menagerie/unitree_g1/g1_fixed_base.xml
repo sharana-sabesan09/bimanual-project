@@ -50,7 +50,6 @@
     <mesh file="left_wrist_roll_link.STL"/>
     <mesh file="left_wrist_pitch_link.STL"/>
     <mesh file="left_wrist_yaw_link.STL"/>
-    <mesh file="left_rubber_hand.STL"/>
     <mesh file="right_shoulder_pitch_link.STL"/>
     <mesh file="right_shoulder_roll_link.STL"/>
     <mesh file="right_shoulder_yaw_link.STL"/>
@@ -226,9 +225,7 @@
                             mass="0.254576" diaginertia="0.000646113 0.000559993 0.000147566"/>
                           <joint name="left_wrist_yaw_joint" axis="0 0 1" range="-1.61443 1.61443"
                             actuatorfrcrange="-5 5"/>
-                          <geom class="visual" mesh="left_wrist_yaw_link"/>
                           <geom class="collision" mesh="left_wrist_yaw_link"/>
-                          <geom pos="0.0415 0.003 0" quat="1 0 0 0" class="visual" mesh="left_rubber_hand"/>
                         </body>
                       </body>
                     </body>
@@ -283,9 +280,6 @@
                           <joint name="right_wrist_yaw_joint" axis="0 0 1" range="-1.61443 1.61443"
                             actuatorfrcrange="-5 5"/>
                           <geom class="collision" mesh="right_wrist_yaw_link"/>
-                          <body name="tray" pos="0.20 0 0">
-                            <geom name="tray" type="box" size="0.18 0.13 0.005" rgba="0.8 0.6 0.3 1" density="454.5"/>
-                          </body>
                         </body>
                       </body>
                     </body>
@@ -297,7 +291,17 @@
         </body>
       </body>
     </body>
+
+    <body name="tray" pos="0.55 0 1.15">
+      <freejoint name="tray_freejoint"/>
+      <geom name="tray" type="box" size="0.18 0.13 0.005" rgba="0.8 0.6 0.3 1" density="454.5"/>
+    </body>
   </worldbody>
+
+  <equality>
+    <weld name="right_grip" body1="tray" body2="right_wrist_yaw_link" relpose="0.10 0.13 0  1 0 0 0"/>
+    <weld name="left_grip"  body1="tray" body2="left_wrist_yaw_link"  relpose="0.10 -0.13 0  1 0 0 0"/>
+  </equality>
 
   <actuator>
     <position class="g1" name="left_hip_pitch_joint" joint="left_hip_pitch_joint"/>
