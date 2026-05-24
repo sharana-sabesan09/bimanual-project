@@ -81,7 +81,7 @@ class BallBalanceEnv:
     Only the 7 right-arm joints are exposed as the RL action.
     """
 
-    def __init__(self, show_viewer: bool = True, n_envs: int = 1):
+    def __init__(self, show_viewer: bool = True, n_envs: int = 1, action_delta: float = 0.3, ball_vel_range: float = 0.0):
         self.scene = gs.Scene(
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(2.5, -2.5, 2.0),
@@ -93,6 +93,8 @@ class BallBalanceEnv:
             sim_options=gs.options.SimOptions(dt=0.02),
         )
 
+        self.action_delta = action_delta
+        self.ball_vel_range = ball_vel_range
         self.scene.add_entity(gs.morphs.Plane())
 
         # Spawn at z=0.79 to match the "stand" keyframe height
@@ -135,6 +137,14 @@ class BallBalanceEnv:
         ])
         # Both arms combined for a single control call in step()
         self._both_arm_dofs = self._right_arm_dofs + self._left_arm_dofs
+        # store hold positions and simple joint limits as tensors on the scene device
+        self._right_arm_hold = torch.tensor(RIGHT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32)
+        self._left_arm_hold = torch.tensor(LEFT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32)
+        # conservative joint limits: allow full rotation by default
+        self._right_arm_lower = torch.full((len(self._right_arm_dofs),), -3.14159, device=gs.device)
+        self._right_arm_upper = torch.full((len(self._right_arm_dofs),),  3.14159, device=gs.device)
+        self._left_arm_lower = torch.full((len(self._left_arm_dofs),), -3.14159, device=gs.device)
+        self._left_arm_upper = torch.full((len(self._left_arm_dofs),),  3.14159, device=gs.device)
 
     # ── reset / step ──────────────────────────────────────────────────────────
 
@@ -166,9 +176,25 @@ class BallBalanceEnv:
         tray_pos = self.robot.get_link("tray").get_pos()  # (b, 3)
         if envs_idx is not None:
             tray_pos = tray_pos[envs_idx]
+        b = tray_pos.shape[0]
+        # random offset within tray bounds (half-size minus ball radius)
+        xy_noise = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * torch.tensor(
+            [TRAY_SIZE[0] / 2 - BALL_RADIUS, TRAY_SIZE[1] / 2 - BALL_RADIUS],
+            device=tray_pos.device,
+        )
         ball_z = tray_pos[:, 2:3] + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005
-        spawn = torch.cat([tray_pos[:, :2], ball_z], dim=-1)
+        spawn = torch.cat([tray_pos[:, :2] + xy_noise, ball_z], dim=-1)
         self.ball.set_pos(spawn, zero_velocity=True, envs_idx=envs_idx)
+        if self.ball_vel_range > 0:
+            # random XY velocity, capped at ball_vel_range m/s
+            vel = torch.zeros(b, 6, device=tray_pos.device)
+            vel[:, :2] = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * self.ball_vel_range
+            # set linear velocity; keep angular zero
+            try:
+                self.ball.set_dofs_velocity(vel, envs_idx=envs_idx)
+            except Exception:
+                # fallback if set_dofs_velocity isn't available
+                self.ball.set_vel(vel[:, :3], envs_idx=envs_idx)
 
     def step(self, action: np.ndarray):
         """
@@ -181,15 +207,25 @@ class BallBalanceEnv:
         )
         # TODO: normalize action to [-1, 1] range
         # action[:, :7] = right arm, action[:, 7:] = left arm
-        self.robot.control_dofs_position(
-            action.astype(np.float32),
-            dofs_idx_local=self._both_arm_dofs,
-        )
+        action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
+        # split into right / left
+        right_action = action_tensor[:, : len(self._right_arm_dofs)]
+        left_action = action_tensor[:, len(self._right_arm_dofs):]
+
+        right_targets = self._right_arm_hold + right_action * self.action_delta
+        right_targets = torch.clamp(right_targets, self._right_arm_lower, self._right_arm_upper)
+        self.robot.control_dofs_position(right_targets, dofs_idx_local=self._right_arm_dofs)
+
+        if left_action.shape[-1] == len(self._left_arm_dofs):
+            left_targets = self._left_arm_hold + left_action * self.action_delta
+            left_targets = torch.clamp(left_targets, self._left_arm_lower, self._left_arm_upper)
+            self.robot.control_dofs_position(left_targets, dofs_idx_local=self._left_arm_dofs)
+
         self.scene.step()
 
-        obs              = self.get_obs()
+        obs = self.get_obs()
         ball_pos, ball_vel, goal_pos = self._unpack_obs(obs)
-        reward, done     = self._compute_reward(ball_pos, goal_pos, ball_vel)
+        reward, done = self._compute_reward(ball_pos, goal_pos, ball_vel)
         return obs, reward, done, {}
 
     # ── observations ──────────────────────────────────────────────────────────

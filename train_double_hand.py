@@ -1,24 +1,26 @@
 import argparse
 import pickle
-from importlib import metadata
 from pathlib import Path
+import time
 
 import torch
 from tensordict import TensorDict
 
 try:
+    from importlib import metadata
     if int(metadata.version("rsl-rl-lib").split(".")[0]) < 5:
         raise ImportError
-except (metadata.PackageNotFoundError, ImportError) as e:
-    raise ImportError("Please install 'rsl-rl-lib>=5.0.0'.") from e
+except (Exception,):
+    raise ImportError("Please install 'rsl-rl-lib>=5.0.0'.")
 
 from rsl_rl.runners import OnPolicyRunner
 import genesis as gs
 
 from ball_balance_env import BallBalanceEnv
 
-NUM_OBS = 23        # matches BallBalanceEnv.get_obs() output dim
-NUM_ACTIONS = 7     # right arm joints
+# Updated for both arms
+NUM_OBS = 37        # matches BallBalanceEnv.get_obs() output dim
+NUM_ACTIONS = 14    # both arm joints (right 7 + left 7)
 MAX_EPISODE_STEPS = 500  # 10 s at dt=0.02
 
 
@@ -109,13 +111,15 @@ def get_train_cfg(exp_name: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-e", "--exp_name", type=str, default="ball_balance")
+    parser.add_argument("-e", "--exp_name", type=str, default="ball_balance_double")
     parser.add_argument("-n", "--num_envs", type=int, default=1024)
     parser.add_argument("--max_iterations", type=int, default=1000)
     parser.add_argument("-v", "--vis", action="store_true", default=False)
+    parser.add_argument("--action_delta", type=float, default=0.3)
     args = parser.parse_args()
 
     try:
+        print("Initializing Genesis...")
         gs.init(backend=gs.gpu, precision="32", logging_level="warning")
     except Exception as e:
         print(f"GPU initialization failed ({e}). Falling back to CPU backend...")
@@ -128,10 +132,33 @@ def main():
     with open(log_dir / "train_cfg.pkl", "wb") as f:
         pickle.dump(train_cfg, f)
 
-    env = BallBalanceVecEnv(n_envs=args.num_envs, show_viewer=args.vis)
+    env = BallBalanceVecEnv(n_envs=args.num_envs, show_viewer=args.vis, action_delta=args.action_delta)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
-    runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
+    # debug/progress: run learn in small chunks and print concise progress
+    print(f"Starting training: device={gs.device}, num_envs={args.num_envs}, action_delta={args.action_delta}")
+    print(f"Obs dim={NUM_OBS}, Action dim={NUM_ACTIONS}, max_steps={MAX_EPISODE_STEPS}")
 
+    chunk = 10
+    iterations_done = 0
+    t0 = time.time()
+    while iterations_done < args.max_iterations:
+        to_run = min(chunk, args.max_iterations - iterations_done)
+        iter_t0 = time.time()
+        runner.learn(num_learning_iterations=to_run, init_at_random_ep_len=(iterations_done == 0))
+        iter_elapsed = time.time() - iter_t0
+        iterations_done += to_run
+        total_elapsed = time.time() - t0
+        avg_per_iter = total_elapsed / iterations_done
+        remaining = args.max_iterations - iterations_done
+        eta = remaining * avg_per_iter
+        print(f"[{time.strftime('%H:%M:%S')}] Iter {iterations_done}/{args.max_iterations} (+{to_run}) "
+              f"total_elapsed={total_elapsed:.1f}s avg_iter={avg_per_iter:.2f}s chunk_time={iter_elapsed:.1f}s ETA={eta/60:.1f}min")
+        # flush stdout to ensure logs appear promptly
+        try:
+            import sys
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()
