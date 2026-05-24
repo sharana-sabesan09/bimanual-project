@@ -25,8 +25,8 @@ MAX_EPISODE_STEPS = 500  # 10 s at dt=0.02
 class BallBalanceVecEnv:
     """Thin wrapper adapting BallBalanceEnv to the rsl-rl VecEnv interface."""
 
-    def __init__(self, n_envs: int, show_viewer: bool = False):
-        self._env = BallBalanceEnv(show_viewer=show_viewer, n_envs=n_envs)
+    def __init__(self, n_envs: int, show_viewer: bool = False, **env_kwargs):
+        self._env = BallBalanceEnv(show_viewer=show_viewer, n_envs=n_envs, **env_kwargs)
         self.num_envs = n_envs
         self.num_actions = NUM_ACTIONS
         self.max_episode_length = MAX_EPISODE_STEPS
@@ -114,8 +114,12 @@ def main():
     parser.add_argument("--max_iterations", type=int, default=1000)
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     args = parser.parse_args()
-
-    gs.init(backend=gs.gpu, precision="32", logging_level="warning")
+    
+    try:
+        gs.init(backend=gs.gpu, precision="32", logging_level="warning")
+    except Exception as e:
+        print(f"GPU initialization failed ({e}). Falling back to CPU backend...")
+        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
 
     log_dir = Path("logs") / args.exp_name
     log_dir.mkdir(parents=True, exist_ok=True)

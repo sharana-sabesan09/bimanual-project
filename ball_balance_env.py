@@ -80,7 +80,7 @@ class BallBalanceEnv:
     Only the 7 right-arm joints are exposed as the RL action.
     """
 
-    def __init__(self, show_viewer: bool = True, n_envs: int = 1):
+    def __init__(self, show_viewer: bool = True, n_envs: int = 1, action_delta: float = 0.3):
         self.scene = gs.Scene(
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(2.5, -2.5, 2.0),
@@ -107,6 +107,7 @@ class BallBalanceEnv:
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
 
+        self.action_delta = action_delta
         self.scene.build(n_envs=n_envs)
         self._cache_dof_indices()
         self.n_arm_dofs = len(self._right_arm_dofs)
@@ -134,6 +135,10 @@ class BallBalanceEnv:
             STAND_LEG_POS, STAND_LEG_POS,
             STAND_WAIST_POS, STAND_LEFT_ARM_POS,
         ])
+        dof_lower, dof_upper = self.robot.get_dofs_limit()
+        self._right_arm_lower = dof_lower[self._right_arm_dofs]
+        self._right_arm_upper = dof_upper[self._right_arm_dofs]
+        self._right_arm_hold = torch.tensor(RIGHT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32)
 
     # ── reset / step ──────────────────────────────────────────────────────────
 
@@ -159,8 +164,14 @@ class BallBalanceEnv:
         tray_pos = self.robot.get_link("tray").get_pos()  # (b, 3)
         if envs_idx is not None:
             tray_pos = tray_pos[envs_idx]
+        b = tray_pos.shape[0]
+        # random offset within tray bounds (half-size minus ball radius)
+        xy_noise = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * torch.tensor(
+            [TRAY_SIZE[0] / 2 - BALL_RADIUS, TRAY_SIZE[1] / 2 - BALL_RADIUS],
+            device=tray_pos.device,
+        )
         ball_z = tray_pos[:, 2:3] + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005
-        spawn = torch.cat([tray_pos[:, :2], ball_z], dim=-1)
+        spawn = torch.cat([tray_pos[:, :2] + xy_noise, ball_z], dim=-1)
         self.ball.set_pos(spawn, zero_velocity=True, envs_idx=envs_idx)
 
     def step(self, action: np.ndarray):
@@ -173,13 +184,10 @@ class BallBalanceEnv:
             self._frozen_pos,
             dofs_idx_local=self._frozen_dofs,
         )
-        # TODO: we should normalize action by the max and min range
-        # so input of action is between -1 and 1 but here inside step it scales it by the max and min values of the joint range
-        # Apply RL action to right arm
-        self.robot.control_dofs_position(
-            action.astype(np.float32),
-            dofs_idx_local=self._right_arm_dofs,
-        )
+        action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
+        targets = self._right_arm_hold + action_tensor * self.action_delta
+        targets = torch.clamp(targets, self._right_arm_lower, self._right_arm_upper)
+        self.robot.control_dofs_position(targets, dofs_idx_local=self._right_arm_dofs)
         self.scene.step()
 
         obs              = self.get_obs()
