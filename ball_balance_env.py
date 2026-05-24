@@ -80,7 +80,7 @@ class BallBalanceEnv:
     Only the 7 right-arm joints are exposed as the RL action.
     """
 
-    def __init__(self, show_viewer: bool = True, n_envs: int = 1, action_delta: float = 0.3):
+    def __init__(self, show_viewer: bool = True, n_envs: int = 1, action_delta: float = 0.3, ball_vel_range: float = 0.0):
         self.scene = gs.Scene(
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(2.5, -2.5, 2.0),
@@ -107,7 +107,8 @@ class BallBalanceEnv:
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
 
-        self.action_delta = action_delta
+        self.action_delta   = action_delta
+        self.ball_vel_range = ball_vel_range
         self.scene.build(n_envs=n_envs)
         self._cache_dof_indices()
         self.n_arm_dofs = len(self._right_arm_dofs)
@@ -173,6 +174,11 @@ class BallBalanceEnv:
         ball_z = tray_pos[:, 2:3] + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005
         spawn = torch.cat([tray_pos[:, :2] + xy_noise, ball_z], dim=-1)
         self.ball.set_pos(spawn, zero_velocity=True, envs_idx=envs_idx)
+        if self.ball_vel_range > 0:
+            # random XY velocity, capped at ball_vel_range m/s
+            vel = torch.zeros(b, 6, device=tray_pos.device)
+            vel[:, :2] = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * self.ball_vel_range
+            self.ball.set_dofs_velocity(vel, envs_idx=envs_idx)
 
     def step(self, action: np.ndarray):
         """

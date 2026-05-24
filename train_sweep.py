@@ -31,6 +31,7 @@ BASE_TRAIN = dict(
 BASE_ENV = dict(
     n_envs=1024,
     action_delta=0.3,
+    ball_vel_range=0.0,
 )
 
 # ── experiments ───────────────────────────────────────────────────────────────
@@ -72,6 +73,7 @@ def run_experiment(name, train_ov, env_ov, sweep_dir, max_iterations):
         n_envs=env_kw["n_envs"],
         show_viewer=False,
         action_delta=env_kw["action_delta"],
+        ball_vel_range=env_kw["ball_vel_range"],
     )
 
     t0 = time.time()
@@ -106,10 +108,12 @@ def main():
     rows = []
     for name, train_ov, env_ov in exps:
         elapsed = run_experiment(name, train_ov, env_ov, sweep_dir, args.max_iterations)
+        env_kw = {**BASE_ENV, **env_ov}
         rows.append({
             "experiment":    name,
             "learning_rate": {**BASE_TRAIN, **train_ov}["learning_rate"],
-            "action_delta":  {**BASE_ENV,   **env_ov}["action_delta"],
+            "action_delta":  env_kw["action_delta"],
+            "ball_vel_range": env_kw["ball_vel_range"],
             "elapsed_s":     f"{elapsed:.0f}",
         })
 

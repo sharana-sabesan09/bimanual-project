@@ -25,8 +25,8 @@ MAX_EPISODE_STEPS = 500  # 10 s at dt=0.02
 class BallBalanceVecEnv:
     """Thin wrapper adapting BallBalanceEnv to the rsl-rl VecEnv interface."""
 
-    def __init__(self, n_envs: int, show_viewer: bool = False, **env_kwargs):
-        self._env = BallBalanceEnv(show_viewer=show_viewer, n_envs=n_envs, **env_kwargs)
+    def __init__(self, n_envs: int, show_viewer: bool = False, action_delta: float = 0.3, ball_vel_range: float = 0.0):
+        self._env = BallBalanceEnv(show_viewer=show_viewer, n_envs=n_envs, action_delta=action_delta, ball_vel_range=ball_vel_range)
         self.num_envs = n_envs
         self.num_actions = NUM_ACTIONS
         self.max_episode_length = MAX_EPISODE_STEPS
