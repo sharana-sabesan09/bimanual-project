@@ -270,7 +270,7 @@ class BallBalanceEnv:
         proximity = torch.exp(-3.0 * xy_dist)                              # (b,)
         vel_pen   = -0.1 * torch.norm(ball_vel, dim=-1)                    # (b,)
         fallen    = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)              # (b,)
-        fall_pen  = torch.where(fallen, torch.full_like(proximity, -10.0), torch.zeros_like(proximity))
+        fall_pen  = torch.where(fallen, torch.full_like(proximity, -5.0), torch.zeros_like(proximity))
         return proximity + vel_pen + fall_pen, fallen
 
 
