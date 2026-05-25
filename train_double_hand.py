@@ -114,8 +114,8 @@ def get_train_cfg(exp_name: str) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--exp_name", type=str, default="ball_balance_double")
-    parser.add_argument("-n", "--num_envs", type=int, default=1024)
-    parser.add_argument("--max_iterations", type=int, default=1000)
+    parser.add_argument("-n", "--num_envs", type=int, default=512)
+    parser.add_argument("--max_iterations", type=int, default=500)
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("--action_delta", type=float, default=0.05)
     args = parser.parse_args()
