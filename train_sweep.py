@@ -49,7 +49,7 @@ EXPERIMENTS = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def run_experiment(name, train_ov, env_ov, sweep_dir, max_iterations, get_train_cfg, VecEnvClass):
+def run_experiment(name, train_ov, env_ov, sweep_dir, max_iterations, get_train_cfg, VecEnvClass, chunk_size):
     train_kw = {**BASE_TRAIN, **train_ov}
     env_kw   = {**BASE_ENV,   **env_ov}
 
@@ -77,9 +77,31 @@ def run_experiment(name, train_ov, env_ov, sweep_dir, max_iterations, get_train_
         ball_vel_range=env_kw.get("ball_vel_range", 0.0),
     )
 
-    t0 = time.time()
     runner = OnPolicyRunner(env, cfg, str(log_dir), device=gs.device)
-    runner.learn(num_learning_iterations=max_iterations, init_at_random_ep_len=True)
+
+    iterations_done = 0
+    t0 = time.time()
+    while iterations_done < max_iterations:
+        to_run = min(chunk_size, max_iterations - iterations_done)
+        iter_t0 = time.time()
+        runner.learn(num_learning_iterations=to_run, init_at_random_ep_len=(iterations_done == 0))
+        iter_elapsed = time.time() - iter_t0
+        iterations_done += to_run
+        total_elapsed = time.time() - t0
+        avg_per_iter = total_elapsed / iterations_done
+        remaining = max_iterations - iterations_done
+        eta = remaining * avg_per_iter
+        print(f"[{time.strftime('%H:%M:%S')}] Experiment={name} "
+              f"{iterations_done}/{max_iterations} (+{to_run}) "
+              f"chunk_time={iter_elapsed:.1f}s "
+              f"total={total_elapsed:.1f}s "
+              f"ETA={eta/60:.1f}m")
+        try:
+            import sys
+            sys.stdout.flush()
+        except Exception:
+            pass
+
     return time.time() - t0
 
 
@@ -87,6 +109,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-s", "--sweep_name", default="sweep_01")
     parser.add_argument("--max_iterations", type=int, default=300)
+    parser.add_argument("--chunk_size", type=int, default=10,
+                        help="number of iterations per progress printout")
     parser.add_argument("--n_envs", type=int, default=None,
                         help="override the number of parallel environments for this sweep")
     parser.add_argument("--action_delta", type=float, default=None,
@@ -131,7 +155,7 @@ def main():
     rows = []
     for name, train_ov, env_ov in exps:
         elapsed = run_experiment(name, train_ov, env_ov, sweep_dir, args.max_iterations,
-                                 get_train_cfg, VecEnvClass)
+                                 get_train_cfg, VecEnvClass, args.chunk_size)
         rows.append({
             "experiment":    name,
             "learning_rate": {**BASE_TRAIN, **train_ov}["learning_rate"],
