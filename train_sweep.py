@@ -87,6 +87,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-s", "--sweep_name", default="sweep_01")
     parser.add_argument("--max_iterations", type=int, default=300)
+    parser.add_argument("--n_envs", type=int, default=None,
+                        help="override the number of parallel environments for this sweep")
+    parser.add_argument("--action_delta", type=float, default=None,
+                        help="override action_delta for all experiments")
+    parser.add_argument("--ball_vel_range", type=float, default=None,
+                        help="override initial ball velocity magnitude for all experiments")
     parser.add_argument("--experiments", nargs="+",
                         help="subset of experiment names to run (default: all)")
     parser.add_argument("--mode", choices=["single", "double"], default="single",
@@ -106,6 +112,14 @@ def main():
     mod = importlib.import_module(mod_name)
     get_train_cfg = getattr(mod, "get_train_cfg")
     VecEnvClass = getattr(mod, "BallBalanceVecEnv")
+
+    # apply CLI overrides to the environment config
+    if args.n_envs is not None:
+        BASE_ENV["n_envs"] = args.n_envs
+    if args.action_delta is not None:
+        BASE_ENV["action_delta"] = args.action_delta
+    if args.ball_vel_range is not None:
+        BASE_ENV["ball_vel_range"] = args.ball_vel_range
 
     exps = EXPERIMENTS
     if args.experiments:
