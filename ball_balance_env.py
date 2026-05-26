@@ -267,39 +267,44 @@ class BallBalanceEnv:
         return ball_pos, ball_vel, goal_pos
 
     # ── reward ────────────────────────────────────────────────────────────────
-    def _compute_reward(self, ball_pos, goal_pos, ball_vel, right_action, left_action):
-        """
-        Improved bimanual reward:
-        + keep ball near tray center
-        + encourage smooth / stable motion
-        + discourage excessive arm motion
-        + softer terminal penalty
-        """
+    def _compute_reward(self, ball_pos, goal_pos, ball_vel,
+                    right_action, left_action):
         xy_dist = torch.norm(
             ball_pos[:, :2] - goal_pos[:, :2],
             dim=-1
         )
-        proximity = torch.exp(-1.5 * xy_dist)
+
+        proximity = (
+            1.0
+            - 0.5 * xy_dist
+            + 0.5 * torch.exp(-2.0 * xy_dist)
+        )
 
         ball_speed = torch.norm(ball_vel, dim=-1)
-
         vel_pen = -0.1 * ball_speed
 
-        all_actions = torch.cat([right_action, left_action], dim=-1)
-
-        action_pen = -0.005 * torch.norm(all_actions, dim=-1)
-
-        mirrored_left = left_action.clone()
-
-        mirrored_left[:, 1] *= -1   # shoulder roll
-        mirrored_left[:, 4] *= -1   # wrist roll
-
-        coordination_pen = -0.01 * torch.norm(
-            right_action - mirrored_left,
+        all_actions = torch.cat(
+            [right_action, left_action],
             dim=-1
         )
 
-        fallen = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)
+        action_pen = -0.003 * torch.norm(
+            all_actions,
+            dim=-1
+        )
+
+        delta_actions = all_actions - self.prev_actions
+
+        smoothness_pen = -0.02 * torch.norm(
+            delta_actions,
+            dim=-1
+        )
+
+        alive_bonus = 0.2
+
+        fallen = ball_pos[:, 2] < (
+            goal_pos[:, 2] - 0.15
+        )
 
         fall_pen = torch.where(
             fallen,
@@ -309,11 +314,14 @@ class BallBalanceEnv:
 
         reward = (
             proximity
+            + alive_bonus
             + vel_pen
             + action_pen
-            + coordination_pen
+            + smoothness_pen
             + fall_pen
         )
+
+        self.prev_actions = all_actions.detach()
 
         return reward, fallen
 
