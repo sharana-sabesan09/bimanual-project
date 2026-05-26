@@ -81,7 +81,14 @@ class BallBalanceEnv:
     Only the 7 right-arm joints are exposed as the RL action.
     """
 
-    def __init__(self, show_viewer: bool = True, n_envs: int = 1, action_delta: float = 0.3, ball_vel_range: float = 0.0):
+    def __init__(
+        self,
+        show_viewer: bool = True,
+        n_envs: int = 1,
+        action_delta: float = 0.3,
+        ball_vel_range: float = 0.0,
+        action_conflict_penalty_scale: float = 0.05,
+    ):
         self.scene = gs.Scene(
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(2.5, -2.5, 2.0),
@@ -95,6 +102,7 @@ class BallBalanceEnv:
 
         self.action_delta = action_delta
         self.ball_vel_range = ball_vel_range
+        self.action_conflict_penalty_scale = action_conflict_penalty_scale
         self.scene.add_entity(gs.morphs.Plane())
 
         # Spawn at z=0.79 to match the "stand" keyframe height
@@ -168,8 +176,9 @@ class BallBalanceEnv:
             envs_idx=envs_idx,
         )
         self._reset_ball(envs_idx=envs_idx)
-        if envs_idx is None:
-            self.scene.step()
+        # Flush state changes for both full resets and per-env resets so the
+        # next observation reflects the reset configuration immediately.
+        self.scene.step()
         return self.get_obs()
 
     def _reset_ball(self, envs_idx=None):
@@ -225,7 +234,7 @@ class BallBalanceEnv:
 
         obs = self.get_obs()
         ball_pos, ball_vel, goal_pos = self._unpack_obs(obs)
-        reward, done = self._compute_reward(ball_pos, goal_pos, ball_vel)
+        reward, done = self._compute_reward(ball_pos, goal_pos, ball_vel, right_action, left_action)
         return obs, reward, done, {}
 
     # ── observations ──────────────────────────────────────────────────────────
@@ -259,20 +268,22 @@ class BallBalanceEnv:
 
     # ── reward ────────────────────────────────────────────────────────────────
 
-    def _compute_reward(self, ball_pos, goal_pos, ball_vel):
+    def _compute_reward(self, ball_pos, goal_pos, ball_vel, right_action, left_action):
         """
         Shaped reward:
           + exp(-3 * XY_distance)     proximity to tray centre
           - 0.1 * ball_speed          discourage erratic motion
+          - c * conflicting_actions   discourage the hands from fighting each other
           - 10  if ball falls off     large terminal penalty
         """
         xy_dist   = torch.norm(ball_pos[:, :2] - goal_pos[:, :2], dim=-1)  # (b,)
         proximity = torch.exp(-3.0 * xy_dist)                              # (b,)
         vel_pen   = -0.1 * torch.norm(ball_vel, dim=-1)                    # (b,)
+        conflict = torch.relu(-(right_action * left_action)).mean(dim=-1)
+        action_pen = -self.action_conflict_penalty_scale * conflict
         fallen    = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)              # (b,)
-        fall_pen  = torch.where(fallen, torch.full_like(proximity, -5.0), torch.zeros_like(proximity))
-        return proximity + vel_pen + fall_pen, fallen
-
+        fall_pen  = torch.where(fallen, torch.full_like(proximity, -10.0), torch.zeros_like(proximity))
+        return proximity + vel_pen + action_pen + fall_pen, fallen
 
 if __name__ == "__main__":
     print("this cannot be run standalone")
