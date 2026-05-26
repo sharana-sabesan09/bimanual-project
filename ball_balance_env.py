@@ -267,23 +267,55 @@ class BallBalanceEnv:
         return ball_pos, ball_vel, goal_pos
 
     # ── reward ────────────────────────────────────────────────────────────────
-
     def _compute_reward(self, ball_pos, goal_pos, ball_vel, right_action, left_action):
         """
-        Shaped reward:
-          + exp(-3 * XY_distance)     proximity to tray centre
-          - 0.1 * ball_speed          discourage erratic motion
-          - c * conflicting_actions   discourage the hands from fighting each other
-          - 10  if ball falls off     large terminal penalty
+        Improved bimanual reward:
+        + keep ball near tray center
+        + encourage smooth / stable motion
+        + discourage excessive arm motion
+        + softer terminal penalty
         """
-        xy_dist   = torch.norm(ball_pos[:, :2] - goal_pos[:, :2], dim=-1)  # (b,)
-        proximity = torch.exp(-3.0 * xy_dist)                              # (b,)
-        vel_pen   = -0.1 * torch.norm(ball_vel, dim=-1)                    # (b,)
-        conflict = torch.relu(-(right_action * left_action)).mean(dim=-1)
-        action_pen = -self.action_conflict_penalty_scale * conflict
-        fallen    = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)              # (b,)
-        fall_pen  = torch.where(fallen, torch.full_like(proximity, -10.0), torch.zeros_like(proximity))
-        return proximity + vel_pen + action_pen + fall_pen, fallen
+        xy_dist = torch.norm(
+            ball_pos[:, :2] - goal_pos[:, :2],
+            dim=-1
+        )
+        proximity = torch.exp(-1.5 * xy_dist)
+
+        ball_speed = torch.norm(ball_vel, dim=-1)
+
+        vel_pen = -0.1 * ball_speed
+
+        all_actions = torch.cat([right_action, left_action], dim=-1)
+
+        action_pen = -0.005 * torch.norm(all_actions, dim=-1)
+
+        mirrored_left = left_action.clone()
+
+        mirrored_left[:, 1] *= -1   # shoulder roll
+        mirrored_left[:, 4] *= -1   # wrist roll
+
+        coordination_pen = -0.01 * torch.norm(
+            right_action - mirrored_left,
+            dim=-1
+        )
+
+        fallen = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)
+
+        fall_pen = torch.where(
+            fallen,
+            torch.full_like(proximity, -10.0),
+            torch.zeros_like(proximity)
+        )
+
+        reward = (
+            proximity
+            + vel_pen
+            + action_pen
+            + coordination_pen
+            + fall_pen
+        )
+
+        return reward, fallen
 
 if __name__ == "__main__":
     print("this cannot be run standalone")
