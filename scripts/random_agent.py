@@ -26,13 +26,11 @@ def main():
         from source.tasks.double.env import DualArmBallBalanceEnv
         env = DualArmBallBalanceEnv(show_viewer=True, n_envs=1)
 
-    obs = env.reset()
+    obs, _ = env.reset()
 
     while True:
         action = np.random.uniform(-1.0, 1.0, (1, env.n_arm_dofs)).astype(np.float32)
-        obs, reward, done, _ = env.step(action)
-        if done.any():
-            obs = env.reset()
+        obs, reward, terminated, truncated, _ = env.step(action)
 
 
 if __name__ == "__main__":
