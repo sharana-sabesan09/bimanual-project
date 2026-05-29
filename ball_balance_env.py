@@ -118,7 +118,7 @@ class BallBalanceEnv:
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
 
-        self.scene.build(n_envs=n_envs)
+        self.scene.build(n_envs=n_envs, env_spacing=(2.0, 2.0))
         self._cache_dof_indices()
         self.n_arm_dofs = len(self._both_arm_dofs)  # 14 for both arms
         self.reset()
