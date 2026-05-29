@@ -1,4 +1,5 @@
+genesis-world
+rsl-rl-lib>=5.0.0
 tensordict
 tensorboard
-rsl-rl-lib>=5.0.0
 gymnasium
