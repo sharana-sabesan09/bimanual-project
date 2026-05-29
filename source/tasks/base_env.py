@@ -14,6 +14,7 @@ class BaseVecEnv(gym.Env):
 
     def __init__(self, show_viewer: bool = True, n_envs: int = 1, max_episode_steps: int = 500):
         super().__init__()
+        self.n_envs = n_envs
         self.max_episode_steps = max_episode_steps
 
         self.scene = gs.Scene(
@@ -30,10 +31,9 @@ class BaseVecEnv(gym.Env):
         self._build_scene(n_envs)      # add entities + scene.build()
         self._post_build_init()        # cache indices, set n_arm_dofs, init spaces + buffers
 
-        n = self.scene.n_envs
-        self.episode_length_buf = torch.zeros(n, dtype=torch.int32, device=gs.device)
-        self.terminated = torch.zeros(n, dtype=torch.bool, device=gs.device)
-        self.truncated  = torch.zeros(n, dtype=torch.bool, device=gs.device)
+        self.episode_length_buf = torch.zeros(self.n_envs, dtype=torch.int32, device=gs.device)
+        self.terminated = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
+        self.truncated  = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
 
         self.reset()
 

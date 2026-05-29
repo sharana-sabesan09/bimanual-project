@@ -8,7 +8,7 @@ class RslRlVecEnvWrapper:
 
     def __init__(self, env):
         self._env = env
-        self.num_envs         = env.scene.n_envs
+        self.num_envs         = env.n_envs
         self.num_actions      = env.n_arm_dofs
         self.max_episode_length = env.max_episode_steps
         self.device           = gs.device

@@ -87,7 +87,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._right_arm_upper = torch.full((7,),  3.14159, device=gs.device)
 
         self.n_arm_dofs = len(self._right_arm_dofs)
-        self.prev_actions = torch.zeros(self.scene.n_envs, self.n_arm_dofs, device=gs.device)
+        self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(23,), dtype=np.float32)
         self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(self.n_arm_dofs,), dtype=np.float32)
@@ -140,7 +140,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         fall_pen       = torch.where(self.terminated,
                                      torch.full_like(proximity, -10.0),
                                      torch.zeros_like(proximity))
-        self.prev_actions = action_tensor.detach()
+        self.prev_actions.copy_(action_tensor.detach())
         return proximity + 0.2 + vel_pen + action_pen + smoothness_pen + fall_pen
 
     # ------------------------------------------------------------------ #
