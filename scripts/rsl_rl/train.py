@@ -15,6 +15,7 @@ import importlib
 import os
 import pickle
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -74,7 +75,8 @@ def main():
         print(f"GPU init failed ({e}). Falling back to CPU...", flush=True)
         gs.init(backend=gs.cpu, precision="32", logging_level="warning")
 
-    log_dir = Path("logs") / args.exp_name
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_dir = Path("logs") / args.exp_name / timestamp
     log_dir.mkdir(parents=True, exist_ok=True)
 
     train_cfg = get_train_cfg(args.exp_name)
