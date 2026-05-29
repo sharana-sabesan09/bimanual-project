@@ -1,11 +1,12 @@
 """
 Zero agent: sends all-zeros action every step.
-Usage: python scripts/zero_agent.py --env {single,dual}
+Usage: python scripts/zero_agent.py --task <gym_env_id>
 """
 
 import argparse
-import sys
+import importlib
 import os
+import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
@@ -14,18 +15,21 @@ import genesis as gs
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env", choices=["single", "dual"], required=True)
+    parser.add_argument("--task", type=str, required=True,
+                        help="Gym env ID, e.g. BallBalance-DualArm-v0")
     args = parser.parse_args()
 
+    import gymnasium as gym
+    import source  # noqa: F401
+
+    env_spec = gym.spec(args.task)
+    EnvClass = getattr(
+        importlib.import_module(env_spec.entry_point.rsplit(":", 1)[0]),
+        env_spec.entry_point.rsplit(":", 1)[1],
+    )
+
     gs.init(backend=gs.cpu)
-
-    if args.env == "single":
-        from source.tasks.single.env import SingleArmBallBalanceEnv
-        env = SingleArmBallBalanceEnv(show_viewer=True, n_envs=1)
-    else:
-        from source.tasks.double.env import DualArmBallBalanceEnv
-        env = DualArmBallBalanceEnv(show_viewer=True, n_envs=1)
-
+    env = EnvClass(show_viewer=True, n_envs=1)
     obs, _ = env.reset()
     action = np.zeros((1, env.n_arm_dofs), dtype=np.float32)
 
