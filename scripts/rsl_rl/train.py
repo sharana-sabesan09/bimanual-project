@@ -42,15 +42,12 @@ def main():
     parser.add_argument("--task",           type=str,   required=True,
                         help="Gym env ID, e.g. BallBalance-DualArm-v0")
     parser.add_argument("-e", "--exp_name", type=str,   default=None,
-                        help="Experiment name (default: task ID)")
+                        help="Optional label appended to the run dir: logs/<task>/<timestamp>-<exp_name>")
     parser.add_argument("-n", "--num_envs", type=int,   default=512)
     parser.add_argument("--max_iterations", type=int,   default=1000)
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--action_delta",   type=float, default=0.3)
     args = parser.parse_args()
-
-    if args.exp_name is None:
-        args.exp_name = args.task
 
     # importing source triggers all gym.register() calls
     import gymnasium as gym
@@ -76,10 +73,11 @@ def main():
         gs.init(backend=gs.cpu, precision="32", logging_level="warning")
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = Path("logs") / args.exp_name / timestamp
+    run_name = f"{timestamp}-{args.exp_name}" if args.exp_name else timestamp
+    log_dir = Path("logs") / args.task / run_name
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    train_cfg = get_train_cfg(args.exp_name)
+    train_cfg = get_train_cfg(run_name)
     with open(log_dir / "train_cfg.pkl", "wb") as f:
         pickle.dump(train_cfg, f)
 
@@ -88,7 +86,7 @@ def main():
     env = RslRlVecEnvWrapper(raw_env)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
 
-    print(f"Training: task={args.task} device={gs.device} num_envs={args.num_envs}", flush=True)
+    print(f"Training: task={args.task} run={run_name} device={gs.device} num_envs={args.num_envs}", flush=True)
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
 
