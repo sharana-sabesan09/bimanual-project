@@ -1,9 +1,17 @@
 """
-Unified training launcher for single-arm and dual-arm ball-balance tasks.
-Usage: python scripts/rsl_rl/train.py --env {single,dual} [options]
+Unified training launcher.
+Usage: python scripts/rsl_rl/train.py --task <gym_env_id> [options]
+
+Available tasks (defined in source/tasks/*/\_\_init\_\_.py):
+  BallBalance-SingleArm-v0
+  BallBalance-DualArm-v0
+  BallBalance-DualArm-LSTM-v0
+
+Adding a new task requires only a gym.register() call — no changes here.
 """
 
 import argparse
+import importlib
 import os
 import pickle
 import sys
@@ -21,24 +29,37 @@ except (metadata.PackageNotFoundError, ImportError) as e:
 from rsl_rl.runners import OnPolicyRunner
 import genesis as gs
 
+
+def _resolve(entry_point: str):
+    """Import and return the object at 'module.path:ClassName'."""
+    module_path, attr = entry_point.rsplit(":", 1)
+    return getattr(importlib.import_module(module_path), attr)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env",            choices=["single", "dual"], required=True)
-    parser.add_argument("-e", "--exp_name", type=str,   default="ball_balance")
+    parser.add_argument("--task",           type=str,   required=True,
+                        help="Gym env ID, e.g. BallBalance-DualArm-v0")
+    parser.add_argument("-e", "--exp_name", type=str,   default=None,
+                        help="Experiment name (default: task ID)")
     parser.add_argument("-n", "--num_envs", type=int,   default=512)
     parser.add_argument("--max_iterations", type=int,   default=1000)
     parser.add_argument("--headless",       action="store_true", default=False)
-    parser.add_argument("--action_delta",   type=float, default=0.05,
-                        help="Action delta for dual env (ignored for single)")
+    parser.add_argument("--action_delta",   type=float, default=0.3)
     args = parser.parse_args()
 
+    if args.exp_name is None:
+        args.exp_name = args.task
+
+    # importing source triggers all gym.register() calls
+    import gymnasium as gym
+    import source  # noqa: F401
+
+    env_spec = gym.spec(args.task)
+    EnvClass    = _resolve(env_spec.entry_point)
+    get_train_cfg = _resolve(env_spec.kwargs["rsl_rl_cfg_entry_point"])
+
     from scripts.rsl_rl.vec_env import RslRlVecEnvWrapper
-    if args.env == "single":
-        from source.tasks.single.env import SingleArmBallBalanceEnv as EnvClass
-        from source.tasks.single.agents.rsl_rl_ppo_cfg import get_train_cfg
-    else:
-        from source.tasks.double.env import DualArmBallBalanceEnv as EnvClass
-        from source.tasks.double.agents.rsl_rl_ppo_cfg import get_train_cfg
 
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     try:
@@ -60,15 +81,12 @@ def main():
     with open(log_dir / "train_cfg.pkl", "wb") as f:
         pickle.dump(train_cfg, f)
 
-    env_kwargs = {}
-    if args.env == "dual":
-        env_kwargs["action_delta"] = args.action_delta
-
-    raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless, **env_kwargs)
+    raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
+                       action_delta=args.action_delta)
     env = RslRlVecEnvWrapper(raw_env)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
 
-    print(f"Training: env={args.env} device={gs.device} num_envs={args.num_envs}", flush=True)
+    print(f"Training: task={args.task} device={gs.device} num_envs={args.num_envs}", flush=True)
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
 

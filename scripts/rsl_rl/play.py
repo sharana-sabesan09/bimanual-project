@@ -1,9 +1,10 @@
 """
-Unified inference script for single-arm and dual-arm ball-balance tasks.
-Usage: python scripts/rsl_rl/play.py --env {single,dual} --checkpoint <path> [options]
+Unified inference script.
+Usage: python scripts/rsl_rl/play.py --task <gym_env_id> --checkpoint <path> [options]
 """
 
 import argparse
+import importlib
 import os
 import pickle
 import sys
@@ -23,22 +24,31 @@ from rsl_rl.runners import OnPolicyRunner
 import genesis as gs
 
 
+def _resolve(entry_point: str):
+    """Import and return the object at 'module.path:ClassName'."""
+    module_path, attr = entry_point.rsplit(":", 1)
+    return getattr(importlib.import_module(module_path), attr)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env",        choices=["single", "dual"], required=True)
-    parser.add_argument("--checkpoint", type=Path, required=True,
+    parser.add_argument("--task",           type=str,   required=True,
+                        help="Gym env ID, e.g. BallBalance-DualArm-v0")
+    parser.add_argument("--checkpoint",     type=Path,  required=True,
                         help="Path to model_*.pt checkpoint file")
-    parser.add_argument("-n", "--num_envs",  type=int,   default=4)
-    parser.add_argument("--headless",        action="store_true", default=False)
-    parser.add_argument("--action_delta",    type=float, default=0.05,
-                        help="Action delta for dual env (ignored for single)")
+    parser.add_argument("-n", "--num_envs", type=int,   default=4)
+    parser.add_argument("--headless",       action="store_true", default=False)
+    parser.add_argument("--action_delta",   type=float, default=0.3)
     args = parser.parse_args()
 
+    # importing source triggers all gym.register() calls
+    import gymnasium as gym
+    import source  # noqa: F401
+
+    env_spec  = gym.spec(args.task)
+    EnvClass  = _resolve(env_spec.entry_point)
+
     from scripts.rsl_rl.vec_env import RslRlVecEnvWrapper
-    if args.env == "single":
-        from source.tasks.single.env import SingleArmBallBalanceEnv as EnvClass
-    else:
-        from source.tasks.double.env import DualArmBallBalanceEnv as EnvClass
 
     checkpoint = args.checkpoint.resolve()
     if not checkpoint.exists():
@@ -53,11 +63,8 @@ def main():
     with open(cfg_path, "rb") as f:
         train_cfg = pickle.load(f)
 
-    env_kwargs = {}
-    if args.env == "dual":
-        env_kwargs["action_delta"] = args.action_delta
-
-    raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless, **env_kwargs)
+    raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
+                       action_delta=args.action_delta)
     env = RslRlVecEnvWrapper(raw_env)
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
