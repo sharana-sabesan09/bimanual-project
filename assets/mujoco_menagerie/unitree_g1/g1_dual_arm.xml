@@ -299,8 +299,8 @@
   </worldbody>
 
   <equality>
-    <weld name="right_grip" body1="tray" body2="right_wrist_yaw_link" relpose="0.10 0.13 0  1 0 0 0"/>
-    <weld name="left_grip"  body1="tray" body2="left_wrist_yaw_link"  relpose="0.10 -0.13 0  1 0 0 0"/>
+    <weld name="right_grip" body1="tray" body2="right_wrist_yaw_link" relpose="-0.15 -0.18 0  1 0 0 0"/>
+    <weld name="left_grip"  body1="tray" body2="left_wrist_yaw_link"  relpose="-0.15 0.18 0  1 0 0 0"/>
   </equality>
 
   <actuator>
