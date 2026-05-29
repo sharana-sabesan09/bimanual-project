@@ -176,6 +176,15 @@ class BallBalanceEnv:
             envs_idx=envs_idx,
         )
         self._reset_ball(envs_idx=envs_idx)
+
+        n_envs = self.scene.n_envs
+        if envs_idx is None:
+            self.prev_actions = torch.zeros(n_envs, self.n_arm_dofs, device=gs.device)
+        else:
+            if not hasattr(self, "prev_actions"):
+                self.prev_actions = torch.zeros(n_envs, self.n_arm_dofs, device=gs.device)
+            self.prev_actions[envs_idx] = 0.0
+
         # Flush state changes for both full resets and per-env resets so the
         # next observation reflects the reset configuration immediately.
         self.scene.step()
