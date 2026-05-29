@@ -1,63 +1,66 @@
 # Bimanual Ball Balance
 
-Unitree G1 humanoid (fixed base) balancing a ball on a tray.  
-Supports single-arm (7 DOF, right wrist) and dual-arm (14 DOF, both wrists).
+Unitree G1 humanoid (fixed base) balancing a ball on a tray. Supports single-arm (7 DOF) and dual-arm (14 DOF). PPO training via rsl-rl-lib >= 5, simulation via Genesis.
 
 ## Setup
 
 ```bash
-conda activate <your_env>
 pip install -r requirements.txt
-```
-
-After cloning, configure the notebook git filter (strips outputs before every commit):
-
-```bash
-python -m nbstripout --install --attributes .gitattributes
+python -m nbstripout --install --attributes .gitattributes  # strips notebook outputs before every commit
 ```
 
 ## Project structure
 
 ```
-source/tasks/single/        — SingleArmBallBalanceEnv + PPO config
-source/tasks/double/        — DualArmBallBalanceEnv + PPO config
+source/tasks/
+  base_env.py              — BaseVecEnv(gym.Env): scene lifecycle, step/reset flow, episode tracking
+  single/
+    env.py                 — SingleArmBallBalanceEnv  (7 DOF, 23-dim obs)
+    agents/
+      rsl_rl_ppo_cfg.py    — PPO hyperparameters
+  double/
+    env.py                 — DualArmBallBalanceEnv    (14 DOF, 37-dim obs)
+    agents/
+      rsl_rl_ppo_cfg.py        — PPO hyperparameters (default MLP)
+      rsl_rl_ppo_cfg_custom.py — PPO hyperparameters (LSTM actor + deep critic)
+
 scripts/
-  zero_agent.py             — sends all-zero actions
-  random_agent.py           — sends uniform-random actions
+  list_envs.py             — print all registered gym task IDs
+  zero_agent.py            — all-zeros rollout
+  random_agent.py          — random action rollout
   rsl_rl/
-    train.py                — PPO training launcher
-    play.py                 — policy rollout / eval
-RL_lib/                     — custom actor/critic architectures (LSTM + deep MLP)
-assets/mujoco_menagerie/    — MJCF robot files
+    train.py               — PPO training launcher
+    play.py                — policy inference
+    vec_env.py             — thin rsl-rl adapter (RslRlVecEnvWrapper)
+
+RL_lib/
+  custom_actor_critic.py   — LSTMActor, DeepMLPCritic (drop-in rsl-rl model replacements)
+  example_train_cfg.py     — example cfg using the custom architectures
+
+assets/mujoco_menagerie/unitree_g1/
+  g1_single_arm.xml        — right wrist tray
+  g1_dual_arm.xml          — both wrists welded
 ```
 
-## Running
+All scripts resolve the env class and PPO config from the gym registry via `--task`. To add a new variant, add a `gym.register()` call in `source/tasks/*/\_\_init\_\_.py` — no changes to scripts needed.
 
-**Zero / random agents:**
-```bash
-python scripts/zero_agent.py   --env {single,dual}
-python scripts/random_agent.py --env {single,dual}
-```
+## Usage
 
-**Train:**
 ```bash
-python scripts/rsl_rl/train.py --env {single,dual}
-python scripts/rsl_rl/train.py --env dual -n 2048 --max_iterations 1000 --action_delta 0.3
-```
-Viewer is shown by default. Pass `--headless` to disable.  
-Checkpoints and TensorBoard logs are saved to `logs/<exp_name>/`.
+python scripts/list_envs.py
 
-**Eval:**
-```bash
-python scripts/rsl_rl/play.py --env {single,dual} --checkpoint logs/<exp_name>/model_1000.pt
-```
+python scripts/zero_agent.py   --task BallBalance-DualArm-v0
+python scripts/random_agent.py --task BallBalance-SingleArm-v0 --num_envs 4
 
-**TensorBoard:**
-```bash
+python scripts/rsl_rl/train.py --task BallBalance-DualArm-v0 -n 512 --headless
+python scripts/rsl_rl/train.py --task BallBalance-DualArm-LSTM-v0 -n 512 --headless -e my_run
+python scripts/rsl_rl/play.py  --task BallBalance-DualArm-v0 --checkpoint logs/.../model_1000.pt
+
 tensorboard --logdir logs/
 ```
 
-## Kaggle training
+Logs are saved to `logs/<task>/<timestamp>[-<label>]/`. Viewer is shown by default — pass `--headless` to disable.
 
-Open `kaggle_training.ipynb`. Set `ENV`, `EXP_NAME`, and `N_ENVS` in cell 1, then run all cells.  
-The notebook detects Kaggle vs local automatically — locally it uses `N_ENVS=4` and `MAX_ITERATIONS=5` for a quick smoke test.
+## Kaggle
+
+Open `kaggle_training.ipynb`, set `TASK` and `EXP_NAME` in cell 1, run all cells. Detects Kaggle vs local automatically (`N_ENVS=4`, `MAX_ITERATIONS=5` locally for a quick smoke test).
