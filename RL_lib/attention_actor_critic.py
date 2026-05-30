@@ -43,10 +43,8 @@ class AttentionActor(MLPModel):
             nn.ELU() if activation == "elu" else nn.ReLU()
         )
 
-        self.self_attn = CrossAttention(self.token_dim, num_heads)
-
-        # Learned type embeddings to help attention distinguish tokens
-        self.type_embed = nn.Parameter(torch.randn(1, 3, self.token_dim) * 0.02)
+        self.left_attn = CrossAttention(self.token_dim, num_heads)
+        self.right_attn = CrossAttention(self.token_dim, num_heads)
 
     def _get_latent_dim(self) -> int:
         """Informs the parent MLP how many features to expect from get_latent."""
@@ -66,17 +64,23 @@ class AttentionActor(MLPModel):
         right = self.right_embed(right_obs).unsqueeze(1)
         ball = self.ball_embed(ball_obs).unsqueeze(1)
 
-        # Construct token sequence: [Left Arm, Right Arm, Ball/Goal]
-        # Shape: (num_envs, 3, token_dim)
-        tokens = torch.cat([left, right, ball], dim=1)
+        left_out = self._attn_chunk(self.left_attn, left, ball, ball)
+        right_out = self._attn_chunk(self.right_attn, right, ball, ball)
 
-        # Add semantic identity to tokens
-        tokens = tokens + self.type_embed
+        return torch.cat([
+            left_out.squeeze(1),
+            right_out.squeeze(1),
+            ball.squeeze(1)
+        ], dim=-1)
 
-        # Self-attention allows each part to look at the others (e.g. Arm-to-Arm coordination)
-        tokens_out = self.self_attn(tokens, tokens, tokens)
-
-        return tokens_out.flatten(start_dim=1)
+    def _attn_chunk(self, attn, q, k, v, chunk_size=256):
+        outs = []
+        for i in range(0, q.shape[0], chunk_size):
+            qi = q[i:i+chunk_size]
+            ki = k[i:i+chunk_size]
+            vi = v[i:i+chunk_size]
+            outs.append(attn(qi, ki, vi))
+        return torch.cat(outs, dim=0)
 
 class AttentionCritic(MLPModel):
     def __init__(self,
@@ -110,10 +114,8 @@ class AttentionCritic(MLPModel):
             nn.ELU() if activation == "elu" else nn.ReLU()
         )
 
-        self.self_attn = CrossAttention(self.token_dim, num_heads)
-
-        # Learned type embeddings to help attention distinguish tokens
-        self.type_embed = nn.Parameter(torch.randn(1, 3, self.token_dim) * 0.02)
+        self.cross_left = CrossAttention(self.token_dim, num_heads)
+        self.cross_right = CrossAttention(self.token_dim, num_heads)
 
     def _get_latent_dim(self) -> int:
         return 3 * self.token_dim
@@ -129,11 +131,20 @@ class AttentionCritic(MLPModel):
         right = self.right_embed(right_obs).unsqueeze(1)
         ball = self.ball_embed(ball_obs).unsqueeze(1)
 
-        tokens = torch.cat([left, right, ball], dim=1)
-        
-        # Add semantic identity to tokens
-        tokens = tokens + self.type_embed
-        
-        tokens_out = self.self_attn(tokens, tokens, tokens)
+        left_out = self._attn_chunk(self.cross_left, left, ball, ball)
+        right_out = self._attn_chunk(self.cross_right, right, ball, ball)
 
-        return tokens_out.flatten(start_dim=1)
+        return torch.cat([
+            left_out.squeeze(1),
+            right_out.squeeze(1),
+            ball.squeeze(1)
+        ], dim=-1)
+
+    def _attn_chunk(self, attn, q, k, v, chunk_size=256):
+        outs = []
+        for i in range(0, q.shape[0], chunk_size):
+            qi = q[i:i+chunk_size]
+            ki = k[i:i+chunk_size]
+            vi = v[i:i+chunk_size]
+            outs.append(attn(qi, ki, vi))
+        return torch.cat(outs, dim=0)
