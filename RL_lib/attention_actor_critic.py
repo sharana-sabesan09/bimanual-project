@@ -45,6 +45,9 @@ class AttentionActor(MLPModel):
 
         self.self_attn = CrossAttention(self.token_dim, num_heads)
 
+        # Learned type embeddings to help attention distinguish tokens
+        self.type_embed = nn.Parameter(torch.randn(1, 3, self.token_dim) * 0.02)
+
     def _get_latent_dim(self) -> int:
         """Informs the parent MLP how many features to expect from get_latent."""
         return 3 * self.token_dim
@@ -66,6 +69,9 @@ class AttentionActor(MLPModel):
         # Construct token sequence: [Left Arm, Right Arm, Ball/Goal]
         # Shape: (num_envs, 3, token_dim)
         tokens = torch.cat([left, right, ball], dim=1)
+
+        # Add semantic identity to tokens
+        tokens = tokens + self.type_embed
 
         # Self-attention allows each part to look at the others (e.g. Arm-to-Arm coordination)
         tokens_out = self.self_attn(tokens, tokens, tokens)
@@ -106,6 +112,9 @@ class AttentionCritic(MLPModel):
 
         self.self_attn = CrossAttention(self.token_dim, num_heads)
 
+        # Learned type embeddings to help attention distinguish tokens
+        self.type_embed = nn.Parameter(torch.randn(1, 3, self.token_dim) * 0.02)
+
     def _get_latent_dim(self) -> int:
         return 3 * self.token_dim
 
@@ -121,6 +130,10 @@ class AttentionCritic(MLPModel):
         ball = self.ball_embed(ball_obs).unsqueeze(1)
 
         tokens = torch.cat([left, right, ball], dim=1)
+        
+        # Add semantic identity to tokens
+        tokens = tokens + self.type_embed
+        
         tokens_out = self.self_attn(tokens, tokens, tokens)
 
         return tokens_out.flatten(start_dim=1)
