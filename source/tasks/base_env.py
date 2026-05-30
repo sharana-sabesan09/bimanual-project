@@ -28,6 +28,8 @@ class BaseVecEnv(gym.Env):
             sim_options=gs.options.SimOptions(dt=0.02),
         )
 
+        self.goal_pose
+
         self._build_scene(n_envs)      # add entities + scene.build()
         self._post_build_init()        # cache indices, set n_arm_dofs, init spaces + buffers
 

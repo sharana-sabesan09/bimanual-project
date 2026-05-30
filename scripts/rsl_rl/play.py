@@ -53,6 +53,8 @@ def main():
     checkpoint = args.checkpoint.resolve()
     if not checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+    print(f"Checkpoint is {checkpoint}")
+    checkpoint.map_location = torch.device('cpu')
 
     cfg_path = checkpoint.parent / "train_cfg.pkl"
     if not cfg_path.exists():
@@ -68,6 +70,7 @@ def main():
     env = RslRlVecEnvWrapper(raw_env)
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
+    
     runner.load(checkpoint)
     print(f"Loaded {checkpoint}")
     policy = runner.get_inference_policy(device=gs.device)
