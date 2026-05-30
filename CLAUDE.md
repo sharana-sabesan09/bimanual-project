@@ -31,13 +31,15 @@ Pass `--headless` to suppress the Genesis viewer. Omit it to show it.
 
 ```
 source/tasks/base_env.py       BaseVecEnv(gym.Env)
-source/tasks/single/env.py     SingleArmBallBalanceEnv(BaseVecEnv)   — 7 DOF, 23-dim obs
+source/tasks/single/env.py     SingleArmBallBalanceEnv(BaseVecEnv)   — 6-dim EE action (IK→7 DOF), 23-dim obs
 source/tasks/double/env.py     DualArmBallBalanceEnv(BaseVecEnv)     — 14 DOF, 37-dim obs
 ```
 
 `BaseVecEnv` owns the Genesis scene lifecycle, episode tracking (`episode_length_buf`, `terminated`, `truncated`), and the concrete `step()`/`reset()` flow. It knows nothing about robots or rewards. Subclasses implement seven abstract methods: `_build_scene`, `_post_build_init`, `_reset_env`, `_apply_action`, `get_obs`, `get_termination`, `_compute_reward`.
 
 **Critical init order in `BaseVecEnv.__init__`:** `self.n_envs` is stored from the constructor arg *before* anything Genesis touches. Do not use `self.scene.n_envs` to size tensors — Genesis does not populate it correctly until after the first `scene.step()`. All tensor allocations (including `prev_actions` in subclasses) must use `self.n_envs`.
+
+**Everything must be batched.** All tensors, actions, observations, and sim calls must carry the leading `n_envs` dimension at all times — even when `n_envs=1`. Never unsqueeze or broadcast silently inside the env or base class to paper over an unbatched input; callers (scripts, agents, teleop) are required to pass correctly shaped `(n_envs, ...)` arrays. This invariant is what makes single-env debugging and multi-env parallel training use identical code paths.
 
 **Step flow:** `_apply_action` → `scene.step` → `episode_length_buf += 1` → `get_obs` → `get_termination` (sets `self.terminated`/`self.truncated`) → `_compute_reward` (may read `self.terminated`) → auto-reset done envs → return 5-tuple `(obs, reward, terminated, truncated, info)`.
 
