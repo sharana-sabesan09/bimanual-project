@@ -69,6 +69,10 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             material=gs.materials.Rigid(rho=BALL_MASS / (4/3 * np.pi * BALL_RADIUS**3)),
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
+        self.goal_marker = self.scene.add_entity(
+            gs.morphs.Sphere(radius=0.025, pos=(0.0, 0.0, 1.5), collision=False),
+            surface=gs.surfaces.Default(color=(0.1, 0.9, 0.1, 0.8)),
+        )
         self.scene.build(n_envs=n_envs, env_spacing=(2.0, 2.0))
 
     def _post_build_init(self):
@@ -108,7 +112,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.robot.set_dofs_position(LEFT_ARM_HOLD_POS, dofs_idx_local=self._left_arm_dofs,
                                      zero_velocity=True, envs_idx=envs_idx)
         self._reset_ball(envs_idx)
-        self._reset_goal_marker()
+        self._reset_goal_marker(envs_idx)
 
         if envs_idx is None:
             self.prev_actions.zero_()
@@ -137,7 +141,9 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         l_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._left_arm_dofs)
         ball_pos = self.ball.get_pos()
         ball_vel = self.ball.get_vel()
-        goal_pos = self.robot.get_link("tray").get_pos() + self.goal_marker_offset
+        tray_pos = self.robot.get_link("tray").get_pos()
+        goal_pos = tray_pos + self.goal_marker_offset
+        self.goal_marker.set_pos(goal_pos)
         return torch.cat([r_pos, r_vel, l_pos, l_vel, ball_pos, ball_vel, goal_pos], dim=-1)
 
     def get_termination(self, obs: torch.Tensor):
@@ -202,16 +208,15 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             except Exception:
                 self.ball.set_vel(vel[:, :3], envs_idx=envs_idx)
 
-    def _reset_goal_marker(self, envs_idx=None): # adds a marker on the tray in sim
+    def _reset_goal_marker(self, envs_idx=None):
         if not self.goal_randomization:
             return
-        tray_pos = self.robot.get_link("tray").get_pos()
-        if envs_idx is not None:
-            tray_pos = tray_pos[envs_idx]
-        b = tray_pos.shape[0]
-        xy_offset = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * torch.tensor(
+        idx = torch.arange(self.n_envs, device=gs.device) if envs_idx is None else envs_idx
+        b = idx.shape[0]
+        xy_offset = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * torch.tensor(
             [TRAY_SIZE[0] / 2 - GOAL_PADDING, TRAY_SIZE[1] / 2 - GOAL_PADDING],
-            device=tray_pos.device,
+            device=gs.device,
         )
-        z = torch.zeros(b, 1, device = tray_pos.device)
-        self.goal_marker_offset = torch.cat([xy_offset, z], dim=-1)
+        z = torch.zeros(b, 1, device=gs.device)
+        self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
+
