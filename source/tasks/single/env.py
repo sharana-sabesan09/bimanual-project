@@ -116,7 +116,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.arm_vel  = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
         self.ball_pos = self.ball.get_pos()
         self.ball_vel = self.ball.get_vel()
-        self.goal_pos = self.robot.get_link("tray").get_pos()
+        self.goal_pos = self.robot.get_link("tray").get_pos() + self.goal_marker_offset
         self.goal_marker.set_pos(self.goal_pos)
 
     def _reset_env(self, envs_idx=None):
@@ -139,23 +139,32 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         return obs, info
 
     def _apply_action(self, action_tensor: torch.Tensor):
+
         # action_tensor: (n_envs, 6) — [dx, dy, dz, droll, dpitch, dyaw]
-        self.ee_target_pos = self.ee_target_pos + action_tensor[:, :3]
-        self.ee_target_rpy = self.ee_target_rpy + action_tensor[:, 3:]
-
-        target_pos_np  = self.ee_target_pos.cpu().numpy()
-        target_quat_np = Rot.from_euler("xyz", self.ee_target_rpy.cpu().numpy()).as_quat()  # xyzw
-
-        q = self.robot.inverse_kinematics(
-            link=self._ee_link,
-            pos=target_pos_np,
-            quat=target_quat_np,
-        )
-
         self.robot.control_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs)
         self.robot.control_dofs_position(
-            q[:, self._right_arm_dofs], dofs_idx_local=self._right_arm_dofs
+            torch.clamp(self._right_arm_hold + action_tensor * self.action_delta,
+                        self._right_arm_lower, self._right_arm_upper),
+            dofs_idx_local=self._right_arm_dofs,
         )
+        # IK section
+            # self.ee_target_pos = self.ee_target_pos + action_tensor[:, :3]
+            # self.ee_target_rpy = self.ee_target_rpy + action_tensor[:, 3:]
+
+            # target_pos_np  = self.ee_target_pos.cpu().numpy()
+            # target_quat_np = Rot.from_euler("xyz", self.ee_target_rpy.cpu().numpy()).as_quat()  # xyzw
+
+            # q = self.robot.inverse_kinematics(
+            #     link=self._ee_link,
+            #     pos=target_pos_np,
+            #     quat=target_quat_np,
+            # )
+
+            # self.robot.control_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs)
+            # self.robot.control_dofs_position(
+            #     q[:, self._right_arm_dofs], dofs_idx_local=self._right_arm_dofs
+            # )
+        # IK endsection
 
     def get_obs(self) -> torch.Tensor:
         return torch.cat([self.arm_pos, self.arm_vel,
@@ -169,14 +178,14 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
         xy_dist        = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
         proximity      = 1.0 - 0.5 * xy_dist + 0.5 * torch.exp(-2.0 * xy_dist)
-        vel_pen        = -0.1  * torch.norm(self.ball_vel, dim=-1)
-        action_pen     = -0.003 * torch.norm(action_tensor, dim=-1)
-        smoothness_pen = -0.02  * torch.norm(action_tensor - self.prev_actions, dim=-1)
+        vel_pen        = -0.05  * torch.norm(self.ball_vel, dim=-1)
+        action_pen     = -0.0001 * torch.norm(action_tensor, dim=-1)
+        # smoothness_pen = -0.02  * torch.norm(action_tensor - self.prev_actions, dim=-1)
         fall_pen       = torch.where(self.terminated,
                                      torch.full_like(proximity, -10.0),
                                      torch.zeros_like(proximity))
         self.prev_actions.copy_(action_tensor.detach())
-        return proximity + 0.2 + vel_pen + action_pen + smoothness_pen + fall_pen
+        return proximity + 0.2 + vel_pen + action_pen + fall_pen #+ smoothness_pen 
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
