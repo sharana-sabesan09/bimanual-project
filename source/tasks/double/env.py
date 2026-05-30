@@ -92,6 +92,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self._left_arm_lower  = torch.full((7,), -3.14159, device=gs.device)
         self._left_arm_upper  = torch.full((7,),  3.14159, device=gs.device)
 
+        self.goal_marker_offset = torch.zeros(self.n_envs, 3, device = gs.device)
+
         self.n_arm_dofs   = len(self._both_arm_dofs)
         self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
 
@@ -135,7 +137,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         l_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._left_arm_dofs)
         ball_pos = self.ball.get_pos()
         ball_vel = self.ball.get_vel()
-        goal_pos = self.robot.get_link("goal_marker").get_pos()
+        goal_pos = self.robot.get_link("tray").get_pos() + self.goal_marker_offset
         return torch.cat([r_pos, r_vel, l_pos, l_vel, ball_pos, ball_vel, goal_pos], dim=-1)
 
     def get_termination(self, obs: torch.Tensor):
@@ -188,7 +190,6 @@ class DualArmBallBalanceEnv(BaseVecEnv):
     def _reset_goal_marker(self, envs_idx=None): # adds a marker on the tray in sim
         if not self.goal_randomization:
             return
-        goal_marker = self.robot.get_link("goal_marker")
         tray_pos = self.robot.get_link("tray").get_pos()
         if envs_idx is not None:
             tray_pos = tray_pos[envs_idx]
@@ -197,5 +198,5 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             [TRAY_SIZE[0] / 2 - GOAL_PADDING, TRAY_SIZE[1] / 2 - GOAL_PADDING],
             device=tray_pos.device,
         )
-        z = torch.zeros(b, 0, device = tray_pos.device)
-        goal_marker.set_pos(torch.cat([xy_offset, z], dim=-1), envs_idx=envs_idx)
+        z = torch.zeros(b, 1, device = tray_pos.device)
+        self.goal_marker_offset = torch.cat([xy_offset, z], dim=-1)
