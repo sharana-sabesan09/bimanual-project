@@ -130,3 +130,12 @@ class AttentionCritic(MLPModel):
             right_out.squeeze(1),
             ball.squeeze(1)
         ], dim=-1)
+    
+    def _attn_chunk(self, attn, q, k, v, chunk_size=256):
+        outs = []
+        for i in range(0, q.shape[0], chunk_size):
+            qi = q[i:i+chunk_size]
+            ki = k[i:i+chunk_size]
+            vi = v[i:i+chunk_size]
+            outs.append(attn(qi, ki, vi))
+        return torch.cat(outs, dim=0)
