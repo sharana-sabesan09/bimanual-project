@@ -87,11 +87,25 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
         self._right_arm_upper = torch.full((7,),  3.14159, device=gs.device)
 
-        self.n_arm_dofs = len(self._right_arm_dofs)
+        self.n_arm_dofs   = len(self._right_arm_dofs)
         self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
+
+        # Cached physics state — populated by _post_physics_step each tick
+        self.arm_pos  = torch.zeros(self.n_envs, 7, device=gs.device)
+        self.arm_vel  = torch.zeros(self.n_envs, 7, device=gs.device)
+        self.ball_pos = torch.zeros(self.n_envs, 3, device=gs.device)
+        self.ball_vel = torch.zeros(self.n_envs, 3, device=gs.device)
+        self.goal_pos = torch.zeros(self.n_envs, 3, device=gs.device)
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(23,), dtype=np.float32)
         self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(self.n_arm_dofs,), dtype=np.float32)
+
+    def _post_physics_step(self):
+        self.arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
+        self.arm_vel  = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
+        self.ball_pos = self.ball.get_pos()
+        self.ball_vel = self.ball.get_vel()
+        self.goal_pos = self.robot.get_link("tray").get_pos()
 
     def _reset_env(self, envs_idx=None):
         self.robot.set_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs,
@@ -115,28 +129,18 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.robot.control_dofs_position(targets, dofs_idx_local=self._right_arm_dofs)
 
     def get_obs(self) -> torch.Tensor:
-        arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
-        arm_vel  = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
-        ball_pos = self.ball.get_pos()
-        ball_vel = self.ball.get_vel()
-        goal_pos = self.robot.get_link("tray").get_pos()
-        return torch.cat([arm_pos, arm_vel, ball_pos, ball_vel, goal_pos], dim=-1)
+        return torch.cat([self.arm_pos, self.arm_vel,
+                          self.ball_pos, self.ball_vel, self.goal_pos], dim=-1)
 
-    def get_termination(self, obs: torch.Tensor):
-        ball_pos = obs[:, 14:17]
-        goal_pos = obs[:, 20:23]
-        self.terminated = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)
+    def get_termination(self):
+        self.terminated = self.ball_pos[:, 2] < (self.goal_pos[:, 2] - 0.15)
         self.truncated  = self.episode_length_buf >= self.max_episode_steps
         return self.terminated, self.truncated
 
-    def _compute_reward(self, obs: torch.Tensor, action_tensor: torch.Tensor) -> torch.Tensor:
-        ball_pos = obs[:, 14:17]
-        ball_vel = obs[:, 17:20]
-        goal_pos = obs[:, 20:23]
-
-        xy_dist        = torch.norm(ball_pos[:, :2] - goal_pos[:, :2], dim=-1)
+    def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
+        xy_dist        = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
         proximity      = 1.0 - 0.5 * xy_dist + 0.5 * torch.exp(-2.0 * xy_dist)
-        vel_pen        = -0.1  * torch.norm(ball_vel, dim=-1)
+        vel_pen        = -0.1  * torch.norm(self.ball_vel, dim=-1)
         action_pen     = -0.003 * torch.norm(action_tensor, dim=-1)
         smoothness_pen = -0.02  * torch.norm(action_tensor - self.prev_actions, dim=-1)
         fall_pen       = torch.where(self.terminated,
