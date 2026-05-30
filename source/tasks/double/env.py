@@ -47,11 +47,11 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
                  ball_vel_range=0.0, max_episode_steps=500,
-                 action_conflict_penalty_scale=0.05, goal_randomization = True):
+                 action_conflict_penalty_scale=0.05, goal_randomization=True):
         self.action_delta                  = action_delta
         self.ball_vel_range                = ball_vel_range
         self.action_conflict_penalty_scale = action_conflict_penalty_scale
-        self.goal_randomization = goal_randomization
+        self.goal_randomization            = goal_randomization
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
 
@@ -96,13 +96,34 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self._left_arm_lower  = torch.full((7,), -3.14159, device=gs.device)
         self._left_arm_upper  = torch.full((7,),  3.14159, device=gs.device)
 
-        self.goal_marker_offset = torch.zeros(self.n_envs, 3, device = gs.device)
+        self.goal_marker_offset = torch.zeros(self.n_envs, 3, device=gs.device)
 
         self.n_arm_dofs   = len(self._both_arm_dofs)
         self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
 
+        # Cached physics state — populated by _post_physics_step each tick
+        self.r_pos    = torch.zeros(self.n_envs, 7,  device=gs.device)
+        self.r_vel    = torch.zeros(self.n_envs, 7,  device=gs.device)
+        self.l_pos    = torch.zeros(self.n_envs, 7,  device=gs.device)
+        self.l_vel    = torch.zeros(self.n_envs, 7,  device=gs.device)
+        self.ball_pos = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.ball_vel = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.tray_pos = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.goal_pos = torch.zeros(self.n_envs, 3,  device=gs.device)
+
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(37,), dtype=np.float32)
         self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(self.n_arm_dofs,), dtype=np.float32)
+
+    def _post_physics_step(self):
+        self.r_pos    = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
+        self.r_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
+        self.l_pos    = self.robot.get_dofs_position(dofs_idx_local=self._left_arm_dofs)
+        self.l_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._left_arm_dofs)
+        self.ball_pos = self.ball.get_pos()
+        self.ball_vel = self.ball.get_vel()
+        self.tray_pos = self.robot.get_link("tray").get_pos()
+        self.goal_pos = self.tray_pos + self.goal_marker_offset
+        self.goal_marker.set_pos(self.goal_pos)
 
     def _reset_env(self, envs_idx=None):
         self.robot.set_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs,
@@ -135,53 +156,33 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         )
 
     def get_obs(self) -> torch.Tensor:
-        r_pos    = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
-        r_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
-        l_pos    = self.robot.get_dofs_position(dofs_idx_local=self._left_arm_dofs)
-        l_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._left_arm_dofs)
-        ball_pos = self.ball.get_pos()
-        ball_vel = self.ball.get_vel()
-        tray_pos = self.robot.get_link("tray").get_pos()
-        goal_pos = tray_pos + self.goal_marker_offset
-        self.goal_marker.set_pos(goal_pos)
-        return torch.cat([r_pos, r_vel, l_pos, l_vel, ball_pos, ball_vel, goal_pos], dim=-1)
+        return torch.cat([self.r_pos, self.r_vel, self.l_pos, self.l_vel,
+                          self.ball_pos, self.ball_vel, self.goal_pos], dim=-1)
 
-    def get_termination(self, obs: torch.Tensor):
-        ball_pos = obs[:, 28:31]
-        goal_pos = obs[:, 34:37]
-        self.terminated = ball_pos[:, 2] < (goal_pos[:, 2] - 0.15)
+    def get_termination(self):
+        self.terminated = self.ball_pos[:, 2] < (self.goal_pos[:, 2] - 0.15)
         self.truncated  = self.episode_length_buf >= self.max_episode_steps
         return self.terminated, self.truncated
 
-    def _compute_reward(self, obs: torch.Tensor, action_tensor: torch.Tensor) -> torch.Tensor:
-        ball_pos = obs[:, 28:31]
-        ball_vel = obs[:, 31:34]
-        goal_pos = obs[:, 34:37]
+    def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
+        xy_dist   = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
+        proximity = torch.exp(-1.5 * xy_dist)
 
-        xy_dist        = torch.norm(ball_pos[:, :2] - goal_pos[:, :2], dim=-1)
-        proximity      = torch.exp(-1.5 * xy_dist)
-
-        ball_speed = torch.norm(ball_vel, dim=-1)
-        vel_pen    = -0.1 * ball_speed
-
+        vel_pen   = -0.1  * torch.norm(self.ball_vel, dim=-1)
         action_pen = -0.005 * torch.norm(action_tensor, dim=-1)
 
-        # Slicing actions for coordination penalty
-        right_action = action_tensor[:, :7]
-        left_action  = action_tensor[:, 7:]
-
-        # Mirror the left arm to check coordination with the right
+        right_action  = action_tensor[:, :7]
+        left_action   = action_tensor[:, 7:]
         mirrored_left = left_action.clone()
         mirrored_left[:, 1] *= -1   # shoulder roll
         mirrored_left[:, 4] *= -1   # wrist roll
-
         coordination_pen = -0.01 * torch.norm(right_action - mirrored_left, dim=-1)
 
-        # self.terminated is updated in get_termination() before this call
-        fall_pen = torch.where(self.terminated, torch.full_like(proximity, -10.0), torch.zeros_like(proximity))
+        fall_pen = torch.where(self.terminated,
+                               torch.full_like(proximity, -10.0),
+                               torch.zeros_like(proximity))
 
         self.prev_actions.copy_(action_tensor.detach())
-
         return proximity + vel_pen + action_pen + coordination_pen + fall_pen
 
     # ------------------------------------------------------------------ #
@@ -219,4 +220,3 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         )
         z = torch.zeros(b, 1, device=gs.device)
         self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
-
