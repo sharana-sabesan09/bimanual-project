@@ -64,23 +64,14 @@ class AttentionActor(MLPModel):
         right = self.right_embed(right_obs).unsqueeze(1)
         ball = self.ball_embed(ball_obs).unsqueeze(1)
 
-        left_out = self._attn_chunk(self.left_attn, left, ball, ball)
-        right_out = self._attn_chunk(self.right_attn, right, ball, ball)
+        left_out = self.left_attn(left, ball, ball)
+        right_out = self.right_attn(right, ball, ball)
 
         return torch.cat([
             left_out.squeeze(1),
             right_out.squeeze(1),
             ball.squeeze(1)
         ], dim=-1)
-
-    def _attn_chunk(self, attn, q, k, v, chunk_size=256):
-        outs = []
-        for i in range(0, q.shape[0], chunk_size):
-            qi = q[i:i+chunk_size]
-            ki = k[i:i+chunk_size]
-            vi = v[i:i+chunk_size]
-            outs.append(attn(qi, ki, vi))
-        return torch.cat(outs, dim=0)
 
 class AttentionCritic(MLPModel):
     def __init__(self,
@@ -131,20 +122,11 @@ class AttentionCritic(MLPModel):
         right = self.right_embed(right_obs).unsqueeze(1)
         ball = self.ball_embed(ball_obs).unsqueeze(1)
 
-        left_out = self._attn_chunk(self.cross_left, left, ball, ball)
-        right_out = self._attn_chunk(self.cross_right, right, ball, ball)
+        left_out = self.cross_left(left, ball, ball)
+        right_out = self.cross_right(right, ball, ball)
 
         return torch.cat([
             left_out.squeeze(1),
             right_out.squeeze(1),
             ball.squeeze(1)
         ], dim=-1)
-
-    def _attn_chunk(self, attn, q, k, v, chunk_size=256):
-        outs = []
-        for i in range(0, q.shape[0], chunk_size):
-            qi = q[i:i+chunk_size]
-            ki = k[i:i+chunk_size]
-            vi = v[i:i+chunk_size]
-            outs.append(attn(qi, ki, vi))
-        return torch.cat(outs, dim=0)

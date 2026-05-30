@@ -90,8 +90,10 @@ class BaseVecEnv(gym.Env):
         self._post_physics_step()
         return self.get_obs(), {}
 
-    def step(self, action: np.ndarray):
-        action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
+    def step(self, action: torch.Tensor | np.ndarray):
+        action_tensor = action
+        if isinstance(action, np.ndarray):
+            action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
         self._apply_action(action_tensor)
         self.scene.step()
         self._post_physics_step()
