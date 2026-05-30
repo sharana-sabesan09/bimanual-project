@@ -34,7 +34,7 @@ def main():
     obs, _ = env.reset()
 
     while True:
-        action = np.random.uniform(-1.0, 1.0, (env.n_envs, env.n_arm_dofs)).astype(np.float32)
+        action = np.random.uniform(-1.0, 1.0, (env.n_envs, env.action_space.shape[0])).astype(np.float32)
         obs, reward, terminated, truncated, _ = env.step(action)
 
 

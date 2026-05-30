@@ -2,10 +2,10 @@
 Single-arm ball-balancing environment.
 
 Unitree G1 — tray rigidly parented to right_wrist_yaw_link.
-Policy controls 7 right-arm joints via position-delta targets.
-Left arm / legs / waist are PD-frozen.
+Policy controls the tray end-effector via 6D Cartesian deltas; IK converts to
+right-arm joint positions each step.  Left arm / legs / waist are PD-frozen.
 
-Action  : (b, 7)  — delta from RIGHT_ARM_HOLD_POS, scaled by action_delta
+Action  : (b, 6)  — [dx, dy, dz, droll, dpitch, dyaw] in world frame (metres / radians)
 Obs     : (b, 23) — right_arm_pos(7) + right_arm_vel(7) + ball_pos(3) + ball_vel(3) + goal_pos(3)
 """
 
@@ -14,6 +14,7 @@ import torch
 import genesis as gs
 import gymnasium as gym
 from pathlib import Path
+from scipy.spatial.transform import Rotation as Rot
 
 from source.tasks.base_env import BaseVecEnv
 
@@ -44,9 +45,8 @@ RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.f
 
 class SingleArmBallBalanceEnv(BaseVecEnv):
 
-    def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
+    def __init__(self, show_viewer=True, n_envs=1,
                  ball_vel_range=0.0, max_episode_steps=500):
-        self.action_delta   = action_delta
         self.ball_vel_range = ball_vel_range
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
@@ -82,12 +82,13 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._frozen_pos  = np.concatenate([STAND_LEG_POS, STAND_LEG_POS,
                                             STAND_WAIST_POS, STAND_LEFT_ARM_POS])
 
-        self._right_arm_hold  = torch.tensor(RIGHT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32)
-        self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
-        self._right_arm_upper = torch.full((7,),  3.14159, device=gs.device)
+        self._ee_link = self.robot.get_link("tray")
 
-        self.n_arm_dofs   = len(self._right_arm_dofs)
-        self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
+        # EE target state — synced to actual tray pose on each reset()
+        self.ee_target_pos = torch.zeros(self.n_envs, 3, device=gs.device)
+        self.ee_target_rpy = torch.zeros(self.n_envs, 3, device=gs.device)
+
+        self.prev_actions = torch.zeros(self.n_envs, 6, device=gs.device)
 
         # Cached physics state — populated by _post_physics_step each tick
         self.arm_pos  = torch.zeros(self.n_envs, 7, device=gs.device)
@@ -97,7 +98,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.goal_pos = torch.zeros(self.n_envs, 3, device=gs.device)
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(23,), dtype=np.float32)
-        self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(self.n_arm_dofs,), dtype=np.float32)
+        self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(6,), dtype=np.float32)
 
     def _post_physics_step(self):
         self.arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
@@ -118,13 +119,30 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         else:
             self.prev_actions[envs_idx] = 0.0
 
+    def reset(self, envs_idx=None, seed=None, options=None):
+        obs, info = super().reset(envs_idx=envs_idx, seed=seed, options=options)
+        # After super().reset() the scene has stepped once — tray pos is accurate
+        self._sync_ee_target(envs_idx)
+        return obs, info
+
     def _apply_action(self, action_tensor: torch.Tensor):
-        self.robot.control_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs)
-        targets = torch.clamp(
-            self._right_arm_hold + action_tensor * self.action_delta,
-            self._right_arm_lower, self._right_arm_upper,
+        # action_tensor: (n_envs, 6) — [dx, dy, dz, droll, dpitch, dyaw]
+        self.ee_target_pos = self.ee_target_pos + action_tensor[:, :3]
+        self.ee_target_rpy = self.ee_target_rpy + action_tensor[:, 3:]
+
+        target_pos_np  = self.ee_target_pos.cpu().numpy()
+        target_quat_np = Rot.from_euler("xyz", self.ee_target_rpy.cpu().numpy()).as_quat()  # xyzw
+
+        q = self.robot.inverse_kinematics(
+            link=self._ee_link,
+            pos=target_pos_np,
+            quat=target_quat_np,
         )
-        self.robot.control_dofs_position(targets, dofs_idx_local=self._right_arm_dofs)
+
+        self.robot.control_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs)
+        self.robot.control_dofs_position(
+            q[:, self._right_arm_dofs], dofs_idx_local=self._right_arm_dofs
+        )
 
     def get_obs(self) -> torch.Tensor:
         return torch.cat([self.arm_pos, self.arm_vel,
@@ -150,6 +168,21 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
+
+    def _sync_ee_target(self, envs_idx=None):
+        """Snap EE target state to the actual tray pose (call after scene.step())."""
+        tray_pos  = self.robot.get_link("tray").get_pos()   # (n_envs, 3)
+        tray_quat = self.robot.get_link("tray").get_quat()  # (n_envs, 4) xyzw
+        tray_rpy  = torch.tensor(
+            Rot.from_quat(tray_quat.cpu().numpy()).as_euler("xyz"),
+            device=gs.device, dtype=torch.float32,
+        )
+        if envs_idx is None:
+            self.ee_target_pos.copy_(tray_pos)
+            self.ee_target_rpy.copy_(tray_rpy)
+        else:
+            self.ee_target_pos[envs_idx] = tray_pos[envs_idx]
+            self.ee_target_rpy[envs_idx] = tray_rpy[envs_idx]
 
     def _reset_ball(self, envs_idx=None):
         tray_pos = self.robot.get_link("tray").get_pos()
