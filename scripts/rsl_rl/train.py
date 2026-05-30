@@ -46,6 +46,7 @@ def main():
     parser.add_argument("-n", "--num_envs", type=int,   default=512)
     parser.add_argument("--max_iterations", type=int,   default=1000)
     parser.add_argument("--headless",       action="store_true", default=False)
+    parser.add_argument("--checkpoint",     type=str, default=None)
     parser.add_argument("--action_delta",   type=float, default=0.3)
     args = parser.parse_args()
 
