@@ -49,7 +49,6 @@ def main():
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--checkpoint",     type=Path, default=None)
     parser.add_argument("--action_delta",   type=float, default=0.3)
-    parser.add_argument("")
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
