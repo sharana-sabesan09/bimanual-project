@@ -54,7 +54,8 @@ def main():
     if not checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
     print(f"Checkpoint is {checkpoint}")
-    checkpoint.map_location = torch.device('cpu')
+    # TODO: Remove this before pushing to main
+    # checkpoint.map_location = torch.device('cpu')
 
     cfg_path = checkpoint.parent / "train_cfg.pkl"
     if not cfg_path.exists():

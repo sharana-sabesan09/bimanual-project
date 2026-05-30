@@ -153,15 +153,30 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         goal_pos = obs[:, 34:37]
 
         xy_dist        = torch.norm(ball_pos[:, :2] - goal_pos[:, :2], dim=-1)
-        proximity      = 1.0 - 0.5 * xy_dist + 0.5 * torch.exp(-2.0 * xy_dist)
-        vel_pen        = -0.1  * torch.norm(ball_vel, dim=-1)
-        action_pen     = -0.003 * torch.norm(action_tensor, dim=-1)
-        smoothness_pen = -0.02  * torch.norm(action_tensor - self.prev_actions, dim=-1)
-        fall_pen       = torch.where(self.terminated,
-                                     torch.full_like(proximity, -10.0),
-                                     torch.zeros_like(proximity))
+        proximity      = torch.exp(-1.5 * xy_dist)
+
+        ball_speed = torch.norm(ball_vel, dim=-1)
+        vel_pen    = -0.1 * ball_speed
+
+        action_pen = -0.005 * torch.norm(action_tensor, dim=-1)
+
+        # Slicing actions for coordination penalty
+        right_action = action_tensor[:, :7]
+        left_action  = action_tensor[:, 7:]
+
+        # Mirror the left arm to check coordination with the right
+        mirrored_left = left_action.clone()
+        mirrored_left[:, 1] *= -1   # shoulder roll
+        mirrored_left[:, 4] *= -1   # wrist roll
+
+        coordination_pen = -0.01 * torch.norm(right_action - mirrored_left, dim=-1)
+
+        # self.terminated is updated in get_termination() before this call
+        fall_pen = torch.where(self.terminated, torch.full_like(proximity, -10.0), torch.zeros_like(proximity))
+
         self.prev_actions.copy_(action_tensor.detach())
-        return proximity + 0.2 + vel_pen + action_pen + smoothness_pen + fall_pen
+
+        return proximity + vel_pen + action_pen + coordination_pen + fall_pen
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
