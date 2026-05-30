@@ -64,8 +64,8 @@ class AttentionActor(MLPModel):
         right = self.right_embed(right_obs).unsqueeze(1)
         ball = self.ball_embed(ball_obs).unsqueeze(1)
 
-        left_out = self.left_attn(left, ball, ball)
-        right_out = self.right_attn(right, ball, ball)
+        left_out = self._attn_chunk(self.left_attn, left, ball, ball)
+        right_out = self._attn_chunk(self.right_attn, right, ball, ball)
 
         return torch.cat([
             left_out.squeeze(1),
