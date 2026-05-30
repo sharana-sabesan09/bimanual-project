@@ -47,9 +47,10 @@ RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.f
 
 class SingleArmBallBalanceEnv(BaseVecEnv):
 
-    def __init__(self, show_viewer=True, n_envs=1,
+    def __init__(self, show_viewer=True, n_envs=1, action_delta = 0.3,
                  ball_vel_range=0.0, max_episode_steps=500, goal_randomization = True):
         self.ball_vel_range = ball_vel_range
+        self.action_delta = action_delta
         self.goal_randomization = goal_randomization
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
@@ -84,12 +85,17 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._left_arm_dofs  = [dof(n) for n in LEFT_ARM_JOINTS]
         self._right_arm_dofs = [dof(n) for n in RIGHT_ARM_JOINTS]
 
-        self.n_arm_dofs = self._right_arm_dofs
+        self.n_arm_dofs = len(self._right_arm_dofs)
 
         self._frozen_dofs = (self._left_leg_dofs + self._right_leg_dofs +
                              self._waist_dofs + self._left_arm_dofs)
         self._frozen_pos  = np.concatenate([STAND_LEG_POS, STAND_LEG_POS,
                                             STAND_WAIST_POS, STAND_LEFT_ARM_POS])
+
+        self._right_arm_hold  = torch.tensor(RIGHT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32)
+        self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
+        self._right_arm_upper = torch.full((7,),  3.14159, device=gs.device)
+
 
         self._ee_link = self.robot.get_link("tray")
 
@@ -97,7 +103,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ee_target_pos = torch.zeros(self.n_envs, 3, device=gs.device)
         self.ee_target_rpy = torch.zeros(self.n_envs, 3, device=gs.device)
 
-        self.prev_actions = torch.zeros(self.n_envs, 6, device=gs.device)
+        self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
 
         # Cached physics state — populated by _post_physics_step each tick
         self.arm_pos  = torch.zeros(self.n_envs, 7, device=gs.device)
@@ -177,7 +183,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
         xy_dist        = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
-        proximity      = 1.0 - 0.5 * xy_dist + 0.5 * torch.exp(-2.0 * xy_dist)
+        proximity = torch.exp(-5.0 * xy_dist)
         vel_pen        = -0.05  * torch.norm(self.ball_vel, dim=-1)
         action_pen     = -0.0001 * torch.norm(action_tensor, dim=-1)
         # smoothness_pen = -0.02  * torch.norm(action_tensor - self.prev_actions, dim=-1)

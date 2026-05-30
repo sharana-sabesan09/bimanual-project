@@ -7,7 +7,7 @@ def get_train_cfg(exp_name: str) -> dict:
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.001,
+            "entropy_coef": 0.01,
             "gamma": 0.99,
             "lam": 0.95,
             "learning_rate": 3e-4,
@@ -21,7 +21,7 @@ def get_train_cfg(exp_name: str) -> dict:
         },
         "actor": {
             "class_name": "MLPModel",
-            "hidden_dims": [256, 256, 128],
+            "hidden_dims": [256, 128],
             "activation": "elu",
             "distribution_cfg": {
                 "class_name": "GaussianDistribution",
