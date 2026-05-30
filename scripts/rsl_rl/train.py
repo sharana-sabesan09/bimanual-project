@@ -21,6 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from source.tasks.double.agents.rsl_rl_ppo_cfg_attention import get_train_cfg
+
 try:
     from importlib import metadata
     if int(metadata.version("rsl-rl-lib").split(".")[0]) < 5:

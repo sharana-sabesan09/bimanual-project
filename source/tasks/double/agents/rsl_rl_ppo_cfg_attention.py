@@ -4,10 +4,10 @@ def get_train_cfg(exp_name: str) -> dict:
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.01,
+            "entropy_coef": 0.001,
             "gamma": 0.99,
             "lam": 0.95,
-            "learning_rate": 3e-4,
+            "learning_rate": 5e-5,
             "max_grad_norm": 1.0,
             "num_learning_epochs": 5,
             "num_mini_batches": 4,
@@ -16,11 +16,11 @@ def get_train_cfg(exp_name: str) -> dict:
             "value_loss_coef": 1.0,
             "rnd_cfg": None,
         },
+
         "actor": {
-            "class_name": "RL_lib.custom_actor_critic.LSTMActor",
-            "hidden_size": 256,
-            "num_layers": 1,
+            "class_name": "RL_lib.attention_actor_critic.AttentionActor",
             "hidden_dims": [256, 128],
+            "num_heads": 4,
             "activation": "elu",
             "distribution_cfg": {
                 "class_name": "GaussianDistribution",
@@ -28,16 +28,20 @@ def get_train_cfg(exp_name: str) -> dict:
                 "std_type": "scalar",
             },
         },
+
         "critic": {
-            "class_name": "RL_lib.custom_actor_critic.DeepMLPCritic",
-            "hidden_dims": [512, 512, 256, 128],
+            "class_name": "RL_lib.attention_actor_critic.AttentionCritic",
+            "hidden_dims": [512, 256, 128],
+            "num_heads": 4,
             "activation": "elu",
         },
+
         "obs_groups": {
             "actor": ["policy"],
             "critic": ["policy"],
         },
-        "num_steps_per_env": 48,
+
+        "num_steps_per_env": 128,
         "save_interval": 100,
         "run_name": exp_name,
         "logger": "tensorboard",
