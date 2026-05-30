@@ -219,10 +219,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
         right_action  = action_tensor[:, :7]
         left_action   = action_tensor[:, 7:]
-        mirrored_left = left_action.clone()
-        mirrored_left[:, 1] *= -1   # shoulder roll
-        mirrored_left[:, 4] *= -1   # wrist roll
-        coordination_pen = -0.01 * torch.norm(right_action - mirrored_left, dim=-1)
+        coord_pen = -0.002 * torch.norm(right_action[:, :3] + left_action[:, :3], dim=-1)
 
         fall_pen = torch.where(self.terminated,
                                torch.full_like(proximity, -10.0),
@@ -234,13 +231,12 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             for i in range(self.n_envs):
                 self.debug_dict["distance_from_goal"][i].append(float(xy_dist[i]))
 
-        return proximity + vel_pen + action_pen + coordination_pen + fall_pen
+        return proximity + vel_pen + action_pen + coord_pen + fall_pen
 
     def _return_and_reset_debug(self, env_idx):
         return_list = self.debug_dict["distance_from_goal"][env_idx].copy()
         self.debug_dict["distance_from_goal"][env_idx] = []
         return return_list
-
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
