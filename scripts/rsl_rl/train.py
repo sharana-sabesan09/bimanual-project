@@ -13,6 +13,7 @@ Adding a new task requires only a gym.register() call — no changes here.
 import argparse
 import importlib
 import os
+import torch
 import pickle
 import sys
 from datetime import datetime
@@ -46,8 +47,9 @@ def main():
     parser.add_argument("-n", "--num_envs", type=int,   default=512)
     parser.add_argument("--max_iterations", type=int,   default=1000)
     parser.add_argument("--headless",       action="store_true", default=False)
-    parser.add_argument("--checkpoint",     type=str, default=None)
+    parser.add_argument("--checkpoint",     type=Path, default=None)
     parser.add_argument("--action_delta",   type=float, default=0.3)
+    parser.add_argument("")
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
@@ -86,6 +88,14 @@ def main():
                        action_delta=args.action_delta)
     env = RslRlVecEnvWrapper(raw_env)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
+    checkpoint = args.checkpoint
+    if checkpoint is not None:
+        checkpoint = checkpoint.resolve()
+        # TODO: Remove this before pushing to main
+        # checkpoint.map_location = torch.device('cpu')
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+        runner.load(checkpoint)
 
     print(f"Training: task={args.task} run={run_name} device={gs.device} num_envs={args.num_envs}", flush=True)
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)

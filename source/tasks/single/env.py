@@ -98,6 +98,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.robot.set_dofs_position(RIGHT_ARM_HOLD_POS, dofs_idx_local=self._right_arm_dofs,
                                      zero_velocity=True, envs_idx=envs_idx)
         self._reset_ball(envs_idx)
+        self._reset_goal_marker()
 
         if envs_idx is None:
             self.prev_actions.zero_()
@@ -166,3 +167,17 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
                 self.ball.set_dofs_velocity(vel, envs_idx=envs_idx)
             except Exception:
                 self.ball.set_vel(vel[:, :3], envs_idx=envs_idx)
+    
+    def _reset_goal_marker(self, envs_idx=None): # adds a marker on the tray in sim
+        if not self.goal_randomization:
+            return
+        tray_pos = self.robot.get_link("tray").get_pos()
+        if envs_idx is not None:
+            tray_pos = tray_pos[envs_idx]
+        b = tray_pos.shape[0]
+        xy_offset = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * torch.tensor(
+            [TRAY_SIZE[0] / 2 - GOAL_PADDING, TRAY_SIZE[1] / 2 - GOAL_PADDING],
+            device=tray_pos.device,
+        )
+        z = torch.zeros(b, 1, device = tray_pos.device)
+        self.goal_marker_offset = torch.cat([xy_offset, z], dim=-1)
