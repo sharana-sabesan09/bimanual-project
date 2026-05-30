@@ -92,9 +92,18 @@ class AttentionCritic(MLPModel):
                          activation=activation,
                          **kwargs)
 
-        self.left_embed = nn.Linear(self.left_dim, self.token_dim)
-        self.right_embed = nn.Linear(self.right_dim, self.token_dim)
-        self.ball_embed = nn.Linear(self.ball_dim, self.token_dim)
+        self.left_embed = nn.Sequential(
+            nn.Linear(self.left_dim, self.token_dim),
+            nn.ELU() if activation == "elu" else nn.ReLU()
+        )
+        self.right_embed = nn.Sequential(
+            nn.Linear(self.right_dim, self.token_dim),
+            nn.ELU() if activation == "elu" else nn.ReLU()
+        )
+        self.ball_embed = nn.Sequential(
+            nn.Linear(self.ball_dim, self.token_dim),
+            nn.ELU() if activation == "elu" else nn.ReLU()
+        )
 
         self.cross_left = CrossAttention(self.token_dim, num_heads)
         self.cross_right = CrossAttention(self.token_dim, num_heads)
@@ -113,11 +122,11 @@ class AttentionCritic(MLPModel):
         right = self.right_embed(right_obs).unsqueeze(1)
         ball = self.ball_embed(ball_obs).unsqueeze(1)
 
-        left = self.cross_left(left, ball, ball)
-        right = self.cross_right(right, ball, ball)
+        left_out = self.cross_left(left, ball, ball)
+        right_out = self.cross_right(right, ball, ball)
 
         return torch.cat([
-            left.squeeze(1),
-            right.squeeze(1),
+            left_out.squeeze(1),
+            right_out.squeeze(1),
             ball.squeeze(1)
         ], dim=-1)
