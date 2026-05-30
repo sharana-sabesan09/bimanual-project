@@ -45,7 +45,8 @@ RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.f
 class SingleArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
-                 ball_vel_range=0.0, max_episode_steps=500):
+                 ball_vel_range=0.0, max_episode_steps=500, goal_randomization=True):
+        self.goal_randomization = goal_randomization
         self.action_delta   = action_delta
         self.ball_vel_range = ball_vel_range
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
