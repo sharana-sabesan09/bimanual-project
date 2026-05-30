@@ -30,9 +30,8 @@ def get_train_cfg(exp_name: str) -> dict:
         },
 
         "critic": {
-            "class_name": "RL_lib.attention_actor_critic.AttentionCritic",
-            "hidden_dims": [512, 256, 128],
-            "num_heads": 4,
+            "class_name": "MLPModel",
+            "hidden_dims": [256, 256, 128],
             "activation": "elu",
         },
 
