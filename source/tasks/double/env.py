@@ -106,7 +106,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.robot.set_dofs_position(LEFT_ARM_HOLD_POS, dofs_idx_local=self._left_arm_dofs,
                                      zero_velocity=True, envs_idx=envs_idx)
         self._reset_ball(envs_idx)
-        self._reset_goal_offset()
+        self._reset_goal_marker()
 
         if envs_idx is None:
             self.prev_actions.zero_()
