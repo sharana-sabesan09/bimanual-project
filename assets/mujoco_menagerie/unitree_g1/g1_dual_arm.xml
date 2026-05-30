@@ -295,6 +295,7 @@
     <body name="tray" pos="0.55 0 1.15">
       <freejoint name="tray_freejoint"/>
       <geom name="tray" type="box" size="0.18 0.13 0.005" rgba="0.8 0.6 0.3 1" density="454.5"/>
+      <body name="goal_marker" pos="0 0 0"/>
     </body>
   </worldbody>
 

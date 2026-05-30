@@ -10,6 +10,7 @@ runs/
 logs/
 *.pt
 *.pth
+.venv/
 
 .vscode/
 .claude/

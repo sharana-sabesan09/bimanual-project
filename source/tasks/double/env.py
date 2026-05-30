@@ -22,6 +22,7 @@ G1_XML = str(_ROOT / "assets" / "mujoco_menagerie" / "unitree_g1" / "g1_dual_arm
 
 TRAY_SIZE   = (0.36, 0.26, 0.01)
 BALL_RADIUS = 0.03
+GOAL_PADDING = 0.03
 BALL_MASS   = 0.1
 
 LEFT_LEG_JOINTS  = ["left_hip_pitch_joint",  "left_hip_roll_joint",  "left_hip_yaw_joint",
@@ -46,10 +47,11 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
                  ball_vel_range=0.0, max_episode_steps=500,
-                 action_conflict_penalty_scale=0.05):
+                 action_conflict_penalty_scale=0.05, goal_randomization = True):
         self.action_delta                  = action_delta
         self.ball_vel_range                = ball_vel_range
         self.action_conflict_penalty_scale = action_conflict_penalty_scale
+        self.goal_randomization = goal_randomization
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
 
@@ -104,6 +106,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.robot.set_dofs_position(LEFT_ARM_HOLD_POS, dofs_idx_local=self._left_arm_dofs,
                                      zero_velocity=True, envs_idx=envs_idx)
         self._reset_ball(envs_idx)
+        self._reset_goal_offset()
 
         if envs_idx is None:
             self.prev_actions.zero_()
@@ -132,7 +135,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         l_vel    = self.robot.get_dofs_velocity(dofs_idx_local=self._left_arm_dofs)
         ball_pos = self.ball.get_pos()
         ball_vel = self.ball.get_vel()
-        goal_pos = self.robot.get_link("tray").get_pos()
+        goal_pos = self.robot.get_link("goal_marker").get_pos()
         return torch.cat([r_pos, r_vel, l_pos, l_vel, ball_pos, ball_vel, goal_pos], dim=-1)
 
     def get_termination(self, obs: torch.Tensor):
@@ -196,3 +199,18 @@ class DualArmBallBalanceEnv(BaseVecEnv):
                 self.ball.set_dofs_velocity(vel, envs_idx=envs_idx)
             except Exception:
                 self.ball.set_vel(vel[:, :3], envs_idx=envs_idx)
+
+    def _reset_goal_marker(self, envs_idx=None): # adds a marker on the tray in sim
+        if not self.goal_randomization:
+            return
+        goal_marker = self.robot.get_link("goal_marker")
+        tray_pos = self.robot.get_link("tray").get_pos()
+        if envs_idx is not None:
+            tray_pos = tray_pos[envs_idx]
+        b = tray_pos.shape[0]
+        xy_offset = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * torch.tensor(
+            [TRAY_SIZE[0] / 2 - GOAL_PADDING, TRAY_SIZE[1] / 2 - GOAL_PADDING],
+            device=tray_pos.device,
+        )
+        z = torch.zeros(b, 0, device = tray_pos.device)
+        goal_marker.set_pos(torch.cat([xy_offset, z], dim=-1), envs_idx=envs_idx)
