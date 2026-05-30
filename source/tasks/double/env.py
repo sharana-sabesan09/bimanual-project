@@ -46,7 +46,7 @@ LEFT_ARM_HOLD_POS  = np.array([-0.7,  0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.f
 class DualArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
-                 ball_vel_range=0.0, max_episode_steps=500,
+                 ball_vel_range=1.0, max_episode_steps=500,
                  action_conflict_penalty_scale=0.05, goal_randomization=True):
         self.action_delta                  = action_delta
         self.ball_vel_range                = ball_vel_range
@@ -166,10 +166,10 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
         xy_dist   = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
-        proximity = torch.exp(-1.5 * xy_dist)
+        proximity = torch.exp(-5.0 * xy_dist)
 
-        vel_pen   = -0.1  * torch.norm(self.ball_vel, dim=-1)
-        action_pen = -0.005 * torch.norm(action_tensor, dim=-1)
+        vel_pen   = -0.05  * torch.norm(self.ball_vel, dim=-1)
+        action_pen = -0.0001 * torch.norm(action_tensor, dim=-1)
 
         right_action  = action_tensor[:, :7]
         left_action   = action_tensor[:, 7:]

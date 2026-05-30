@@ -24,6 +24,8 @@ G1_XML = str(_ROOT / "assets" / "mujoco_menagerie" / "unitree_g1" / "g1_single_a
 TRAY_SIZE   = (0.36, 0.26, 0.01)
 BALL_RADIUS = 0.03
 BALL_MASS   = 0.1
+GOAL_PADDING = 0.03
+
 
 LEFT_LEG_JOINTS  = ["left_hip_pitch_joint",  "left_hip_roll_joint",  "left_hip_yaw_joint",
                     "left_knee_joint",  "left_ankle_pitch_joint",  "left_ankle_roll_joint"]
@@ -46,8 +48,9 @@ RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.f
 class SingleArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(self, show_viewer=True, n_envs=1,
-                 ball_vel_range=0.0, max_episode_steps=500):
+                 ball_vel_range=0.0, max_episode_steps=500, goal_randomization = True):
         self.ball_vel_range = ball_vel_range
+        self.goal_randomization = goal_randomization
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
 
@@ -65,6 +68,10 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
             material=gs.materials.Rigid(rho=BALL_MASS / (4/3 * np.pi * BALL_RADIUS**3)),
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
+        self.goal_marker = self.scene.add_entity(
+            gs.morphs.Sphere(radius=0.025, pos=(0.0, 0.0, 1.5), collision=False),
+            surface=gs.surfaces.Default(color=(0.1, 0.9, 0.1, 0.8)),
+        )
         self.scene.build(n_envs=n_envs, env_spacing=(2.0, 2.0))
 
     def _post_build_init(self):
@@ -76,6 +83,8 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._waist_dofs     = [dof(n) for n in WAIST_JOINTS]
         self._left_arm_dofs  = [dof(n) for n in LEFT_ARM_JOINTS]
         self._right_arm_dofs = [dof(n) for n in RIGHT_ARM_JOINTS]
+
+        self.n_arm_dofs = self._right_arm_dofs
 
         self._frozen_dofs = (self._left_leg_dofs + self._right_leg_dofs +
                              self._waist_dofs + self._left_arm_dofs)
@@ -96,6 +105,8 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ball_pos = torch.zeros(self.n_envs, 3, device=gs.device)
         self.ball_vel = torch.zeros(self.n_envs, 3, device=gs.device)
         self.goal_pos = torch.zeros(self.n_envs, 3, device=gs.device)
+        
+        self.goal_marker_offset = torch.zeros(self.n_envs, 3, device=gs.device)
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(23,), dtype=np.float32)
         self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(6,), dtype=np.float32)
@@ -106,6 +117,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ball_pos = self.ball.get_pos()
         self.ball_vel = self.ball.get_vel()
         self.goal_pos = self.robot.get_link("tray").get_pos()
+        self.goal_marker.set_pos(self.goal_pos)
 
     def _reset_env(self, envs_idx=None):
         self.robot.set_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs,
@@ -113,6 +125,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.robot.set_dofs_position(RIGHT_ARM_HOLD_POS, dofs_idx_local=self._right_arm_dofs,
                                      zero_velocity=True, envs_idx=envs_idx)
         self._reset_ball(envs_idx)
+        self._reset_goal_marker(envs_idx)
 
         if envs_idx is None:
             self.prev_actions.zero_()
@@ -203,3 +216,15 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
                 self.ball.set_dofs_velocity(vel, envs_idx=envs_idx)
             except Exception:
                 self.ball.set_vel(vel[:, :3], envs_idx=envs_idx)
+
+    def _reset_goal_marker(self, envs_idx=None):
+        if not self.goal_randomization:
+            return
+        idx = torch.arange(self.n_envs, device=gs.device) if envs_idx is None else envs_idx
+        b = idx.shape[0]
+        xy_offset = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * torch.tensor(
+            [TRAY_SIZE[0] / 2 - GOAL_PADDING, TRAY_SIZE[1] / 2 - GOAL_PADDING],
+            device=gs.device,
+        )
+        z = torch.zeros(b, 1, device=gs.device)
+        self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)

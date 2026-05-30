@@ -84,7 +84,8 @@ def main():
         pickle.dump(train_cfg, f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       action_delta=args.action_delta)
+                       #action_delta=args.action_delta
+                       )
     env = RslRlVecEnvWrapper(raw_env)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
     checkpoint = args.checkpoint
