@@ -9,6 +9,8 @@ import os
 import pickle
 import sys
 from pathlib import Path
+import numpy as np
+import statistics
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -29,6 +31,16 @@ def _resolve(entry_point: str):
     module_path, attr = entry_point.rsplit(":", 1)
     return getattr(importlib.import_module(module_path), attr)
 
+def find_settle_time(distances, settle_time = 30, settle_range = 0.01):
+    # find first index at which the next 30 timesteps are within 1 cm
+    distances = np.array(distances)
+    for i in range(len(distances)-settle_time):
+        tmp = distances[i:i+settle_time]-distances[i]
+        if np.sum(np.abs(tmp))/settle_time < settle_range:
+            return i
+    return -1
+
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -39,6 +51,7 @@ def main():
     parser.add_argument("-n", "--num_envs", type=int,   default=4)
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--action_delta",   type=float, default=0.3)
+    parser.add_argument("--num_iterations", type=int, default=10)
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
@@ -67,7 +80,7 @@ def main():
         train_cfg = pickle.load(f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       action_delta=args.action_delta)
+                       action_delta=args.action_delta, debug = True)
     env = RslRlVecEnvWrapper(raw_env)
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
@@ -78,11 +91,34 @@ def main():
     policy = runner.get_inference_policy(device=gs.device)
 
     obs = env.reset()
+    num_iterations = args.num_iterations
+    iterations = 0
+    distances_from_goal_list = []
     with torch.no_grad():
-        while True:
+        while (iterations<num_iterations):
             actions = policy(obs)
             obs, _, dones, _ = env.step(actions)
-
+            # print(f"Dones is {dones}")
+            iterations += dones.sum(dim=-1)
+            done_indices = dones.nonzero()
+            # print(f"Done Indices: {done_indices}")
+            for env_idx in done_indices:
+                distances_from_goal_list.append(env._env._return_and_reset_debug(env_idx))
+            
+    average_dists = [statistics.fmean(distances) for distances in distances_from_goal_list]
+    avg_dists_after_1_sec = [statistics.fmean(distances[100:]) for distances in distances_from_goal_list if len(distances) > 100]
+    avg_iteration_length = statistics.mean(len(distances) for distances in distances_from_goal_list)
+    settle_times = []
+    for distances in distances_from_goal_list:
+        settle_time = find_settle_time(distances)
+        settle_times.append(settle_time/100 if settle_time != -1 else 5.)
+    print(f"EVALUATION STATS: \
+          \n--------------------------------\
+    \nAverage distance from goal: {statistics.fmean(average_dists):.6f} \
+    \nAverage distance from goal after one second: {statistics.fmean(avg_dists_after_1_sec):.6f}\
+    \nAverage iteration length: {avg_iteration_length:.6f}\
+    \nAverage settle time: {statistics.mean(settle_times):.6f} seconds \
+    ")
 
 if __name__ == "__main__":
     main()

@@ -47,11 +47,13 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
                  ball_vel_range=1.0, max_episode_steps=500,
-                 action_conflict_penalty_scale=0.05, goal_randomization=True):
+                 action_conflict_penalty_scale=0.05, goal_randomization=True,
+                 debug = False):
         self.action_delta                  = action_delta
         self.ball_vel_range                = ball_vel_range
         self.action_conflict_penalty_scale = action_conflict_penalty_scale
         self.goal_randomization            = goal_randomization
+        self.debug                         = debug
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
 
@@ -113,6 +115,10 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(37,), dtype=np.float32)
         self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(self.n_arm_dofs,), dtype=np.float32)
+
+        if self.debug:
+            self.debug_dict = {"distance_from_goal": [[] for _ in range(self.n_envs)]}
+
 
     def _post_physics_step(self):
         self.r_pos    = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
@@ -183,7 +189,18 @@ class DualArmBallBalanceEnv(BaseVecEnv):
                                torch.zeros_like(proximity))
 
         self.prev_actions.copy_(action_tensor.detach())
+
+        if self.debug:
+            for i in range(self.n_envs):
+                self.debug_dict["distance_from_goal"][i].append(float(xy_dist[i]))
+
         return proximity + vel_pen + action_pen + coordination_pen + fall_pen
+
+    def _return_and_reset_debug(self, env_idx):
+        return_list = self.debug_dict["distance_from_goal"][env_idx].copy()
+        self.debug_dict["distance_from_goal"][env_idx] = []
+        return return_list
+
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
