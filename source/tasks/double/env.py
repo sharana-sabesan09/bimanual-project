@@ -24,6 +24,7 @@ TRAY_SIZE   = (0.36, 0.26, 0.01)
 BALL_RADIUS = 0.03
 GOAL_PADDING = 0.03
 BALL_MASS   = 0.1
+BALL_FORCE_RATE = 10
 
 LEFT_LEG_JOINTS  = ["left_hip_pitch_joint",  "left_hip_roll_joint",  "left_hip_yaw_joint",
                     "left_knee_joint",  "left_ankle_pitch_joint",  "left_ankle_roll_joint"]
@@ -48,12 +49,14 @@ class DualArmBallBalanceEnv(BaseVecEnv):
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
                  ball_vel_range=1.0, max_episode_steps=500,
                  action_conflict_penalty_scale=0.05, goal_randomization=True,
-                 debug = False):
+                 debug = False, ball_pushing=True):
         self.action_delta                  = action_delta
         self.ball_vel_range                = ball_vel_range
         self.action_conflict_penalty_scale = action_conflict_penalty_scale
         self.goal_randomization            = goal_randomization
         self.debug                         = debug
+        self.ball_pushing                  = ball_pushing
+        self.step_counter = 0
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
 
@@ -130,6 +133,9 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.tray_pos = self.robot.get_link("tray").get_pos()
         self.goal_pos = self.tray_pos + self.goal_marker_offset
         self.goal_marker.set_pos(self.goal_pos)
+        if self.step_counter % BALL_FORCE_RATE == 0:
+            self._apply_ball_force()
+        self.step_counter += 1
 
     def _reset_env(self, envs_idx=None):
         self.robot.set_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs,
@@ -237,3 +243,21 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         )
         z = torch.zeros(b, 1, device=gs.device)
         self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
+
+    def _apply_ball_force(self):
+        if self.ball_pushing is False:
+            return
+        for solver in self.scene.sim.solvers:
+            if not isinstance(solver, gs.engine.solvers.RigidSolver):
+                continue
+            rigid_solver = solver
+
+        force_array = (np.random.rand(1,3)-0.5)*2*BALL_MASS
+        force_array[0,2] = 0
+        print(f"Applied force {force_array}")
+
+        # TODO: I am not sure whether this force persists until the next update
+        rigid_solver.apply_links_external_force(
+                force=force_array,
+                links_idx=[int(self.ball._idx_in_solver)], # global link idx
+            )

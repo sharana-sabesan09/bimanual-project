@@ -72,7 +72,7 @@ def main():
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
     
-    runner.load(checkpoint)#, map_location=torch.device("cpu"))
+    runner.load(checkpoint, map_location=torch.device("cpu"))
     #runner.load(checkpoint)
     print(f"Loaded {checkpoint}")
     policy = runner.get_inference_policy(device=gs.device)
