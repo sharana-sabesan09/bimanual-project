@@ -24,7 +24,8 @@ TRAY_SIZE   = (0.36, 0.26, 0.01)
 BALL_RADIUS = 0.03
 GOAL_PADDING = 0.03
 BALL_MASS   = 0.1
-BALL_FORCE_RATE = 10
+BALL_FORCE_FREQUENCY = 10
+BALL_FORCE_PERIOD = 10
 
 LEFT_LEG_JOINTS  = ["left_hip_pitch_joint",  "left_hip_roll_joint",  "left_hip_yaw_joint",
                     "left_knee_joint",  "left_ankle_pitch_joint",  "left_ankle_roll_joint"]
@@ -115,6 +116,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.ball_vel = torch.zeros(self.n_envs, 3,  device=gs.device)
         self.tray_pos = torch.zeros(self.n_envs, 3,  device=gs.device)
         self.goal_pos = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.ball_force = torch.zeros(self.n_envs, 2,  device=gs.device)
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(37,), dtype=np.float32)
         self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(self.n_arm_dofs,), dtype=np.float32)
@@ -133,8 +135,12 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.tray_pos = self.robot.get_link("tray").get_pos()
         self.goal_pos = self.tray_pos + self.goal_marker_offset
         self.goal_marker.set_pos(self.goal_pos)
-        if self.step_counter % BALL_FORCE_RATE == 0:
-            self._apply_ball_force()
+        if self.step_counter % BALL_FORCE_PERIOD == 0:
+            self._apply_random_ball_force(zero=True)
+        if self.step_counter % BALL_FORCE_FREQUENCY == 0:
+            self._apply_random_ball_force()
+        self.ball_force = self.ball.get_dofs_force()[:,:2]
+        
         self.step_counter += 1
 
     def _reset_env(self, envs_idx=None):
@@ -169,7 +175,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
     def get_obs(self) -> torch.Tensor:
         return torch.cat([self.r_pos, self.r_vel, self.l_pos, self.l_vel,
-                          self.ball_pos, self.ball_vel, self.goal_pos], dim=-1)
+                          self.ball_pos, self.ball_vel, self.goal_pos, self.ball_force], dim=-1)
 
     def get_termination(self):
         self.terminated = self.ball_pos[:, 2] < (self.goal_pos[:, 2] - 0.15)
@@ -244,7 +250,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         z = torch.zeros(b, 1, device=gs.device)
         self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
 
-    def _apply_ball_force(self):
+    def _apply_random_ball_force(self, zero = False):
         if self.ball_pushing is False:
             return
         for solver in self.scene.sim.solvers:
@@ -252,12 +258,10 @@ class DualArmBallBalanceEnv(BaseVecEnv):
                 continue
             rigid_solver = solver
 
-        force_array = (np.random.rand(1,3)-0.5)*2*BALL_MASS
-        force_array[0,2] = 0
-        print(f"Applied force {force_array}")
+        force_array = (np.random.rand(6)-0.5)*2*BALL_MASS/10
+        if zero:
+            force_array = np.zeros(6)
+        force_array[2] = 0
 
+        self.ball.control_dofs_force(force_array)
         # TODO: I am not sure whether this force persists until the next update
-        rigid_solver.apply_links_external_force(
-                force=force_array,
-                links_idx=[int(self.ball._idx_in_solver)], # global link idx
-            )
