@@ -15,7 +15,6 @@ import genesis as gs
 import gymnasium as gym
 from pathlib import Path
 import genesis.utils.geom as gu
-
 from source.tasks.base_env import BaseVecEnv
 
 _ROOT = Path(__file__).parents[3]
@@ -73,9 +72,24 @@ LEFT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
 
 STAND_LEG_POS = np.zeros(6, dtype=np.float32)
 STAND_WAIST_POS = np.zeros(3, dtype=np.float32)
-# TODO need to add randomization on start pose
 RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
-LEFT_ARM_HOLD_POS = np.array([-0.7, 0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
+LEFT_ARM_HOLD_POS  = np.array([-0.7,  0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
+
+# Joint axis convention mirror between right and left arms.
+# Where hold positions have opposite signs the joint axes are physically mirrored,
+# so the same Δ produces opposite geometric motion.  Applying s*Δ to the left arm
+# instead of Δ makes the wrist displacements geometrically consistent.
+#   joint:  pitch  roll  yaw  elbow  wrist_roll  wrist_pitch  wrist_yaw
+# Per-joint safe ranges to prevent self-collision and degenerate configurations.
+# Hardware limits from MJCF:
+#   shoulder_pitch: [-3.09, 2.67]   shoulder_roll R: [-2.25, 1.59]  L: [-1.59, 2.25]
+#   shoulder_yaw:   [-2.62, 2.62]   elbow:           [-1.05, 2.09]
+#   wrist_roll:     [-1.97, 1.97]   wrist_pitch:     [-1.61, 1.61]  wrist_yaw: [-1.61, 1.61]
+#   joint:       pitch   roll   yaw   elbow  w_roll  w_pitch  w_yaw
+RIGHT_ARM_SAFE_LOWER = np.array([-2.5, -2.0, -1.5,  0.4,  -1.97,  -1.61,  -1.5], dtype=np.float32)
+RIGHT_ARM_SAFE_UPPER = np.array([ 0.4,  0.8,  1.5,  2.09,  1.97,   0.5,   1.5], dtype=np.float32)
+LEFT_ARM_SAFE_LOWER  = np.array([-2.5, -0.8, -1.5,  0.4,  -1.97,  -1.61,  -1.5], dtype=np.float32)
+LEFT_ARM_SAFE_UPPER  = np.array([ 0.4,  2.0,  1.5,  2.09,  1.97,   0.5,   1.5], dtype=np.float32)
 
 
 
@@ -100,6 +114,9 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         debug=False,
         ball_pushing=True,
         goal_switching=True,
+        pose_csv: str = str(_ROOT / "dr_poses_50k.csv"),
+        pose_settle_steps: int = 0,
+        dt=0.0002,
     ):
         self.action_delta = action_delta
         self.ball_vel_range = ball_vel_range
@@ -109,6 +126,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.ball_pushing = ball_pushing
         self.goal_switching = goal_switching
         # TODO: make self.step_counter array for envs so effects are unique
+        self.pose_csv = pose_csv
+        self.pose_settle_steps = pose_settle_steps
         self.step_counter = torch.zeros(n_envs)
         super().__init__(
             show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps
@@ -153,17 +172,22 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             [STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS]
         )
         self._both_arm_dofs = self._right_arm_dofs + self._left_arm_dofs
+        self._tray_link     = self.robot.get_link("tray")
+        self._tray_qs_idx   = self.robot.get_joint("tray_freejoint").qs_idx_local  # [0..6]
 
-        self._right_arm_hold = torch.tensor(
+        self._right_arm_hold_base = torch.tensor(
             RIGHT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32
         )
-        self._left_arm_hold = torch.tensor(
+        self._left_arm_hold_base = torch.tensor(
             LEFT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32
         )
-        self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
-        self._right_arm_upper = torch.full((7,), 3.14159, device=gs.device)
-        self._left_arm_lower = torch.full((7,), -3.14159, device=gs.device)
-        self._left_arm_upper = torch.full((7,), 3.14159, device=gs.device)
+        self._right_arm_hold = self._right_arm_hold_base.unsqueeze(0).expand(self.n_envs, -1).clone()
+        self._left_arm_hold  = self._left_arm_hold_base.unsqueeze(0).expand(self.n_envs, -1).clone()
+
+        self._right_arm_lower = torch.tensor(RIGHT_ARM_SAFE_LOWER, device=gs.device)
+        self._right_arm_upper = torch.tensor(RIGHT_ARM_SAFE_UPPER, device=gs.device)
+        self._left_arm_lower  = torch.tensor(LEFT_ARM_SAFE_LOWER,  device=gs.device)
+        self._left_arm_upper  = torch.tensor(LEFT_ARM_SAFE_UPPER,  device=gs.device)
 
         self.robot.set_dofs_force_range(
             torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
@@ -202,6 +226,15 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         if self.debug:
             self.debug_dict = {"distance_from_goal": [[] for _ in range(self.n_envs)]}
 
+        self._pose_dataset = None
+        if self.pose_csv is not None:
+            raw = np.loadtxt(self.pose_csv, delimiter=",", skiprows=1)
+            # columns 0-6: r_joint_0..6,  7-13: l_joint_0..6
+            r = torch.tensor(raw[:, :7],   dtype=torch.float32, device=gs.device)
+            l = torch.tensor(raw[:, 7:14], dtype=torch.float32, device=gs.device)
+            self._pose_dataset = (r, l)
+            print(f"[DualArmBallBalanceEnv] loaded {raw.shape[0]} poses from {self.pose_csv}")
+
     def _post_physics_step(self):
         self.r_pos = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
         self.r_vel = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
@@ -209,8 +242,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.l_vel = self.robot.get_dofs_velocity(dofs_idx_local=self._left_arm_dofs)
         self.ball_pos = self.ball.get_pos()
         self.ball_vel = self.ball.get_vel()
-        self.tray_pos = self.robot.get_link("tray").get_pos()
-        self.tray_quat = self.robot.get_link("tray").get_quat()
+        self.tray_pos = self._tray_link.get_pos()
+        self.tray_quat = self._tray_link.get_quat()
 
         # TODO : torch.jit this
         transform_goal_pose(
@@ -245,6 +278,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.step_counter += 1
 
     def _reset_env(self, envs_idx=None):
+        # Reset all joints to nominal hold
         self.robot.set_dofs_position(
             self._frozen_pos,
             dofs_idx_local=self._frozen_dofs,
@@ -263,6 +297,14 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             zero_velocity=True,
             envs_idx=envs_idx,
         )
+        # Reset per-env hold to nominal
+        if envs_idx is None:
+            self._right_arm_hold.copy_(self._right_arm_hold_base.unsqueeze(0).expand(self.n_envs, -1))
+            self._left_arm_hold.copy_(self._left_arm_hold_base.unsqueeze(0).expand(self.n_envs, -1))
+        else:
+            self._right_arm_hold[envs_idx] = self._right_arm_hold_base
+            self._left_arm_hold[envs_idx] = self._left_arm_hold_base
+
         self._reset_ball(envs_idx)
         self._reset_goal_marker(envs_idx)
 
@@ -362,40 +404,90 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.debug_dict["distance_from_goal"][env_idx] = []
         return return_list
 
+    def reset(self, envs_idx=None, seed=None, options=None):
+        obs, info = super().reset(envs_idx=envs_idx, seed=seed, options=options)
+        if self._pose_dataset is None:
+            return obs, info
+
+        r_data, l_data = self._pose_dataset
+        n_poses = r_data.shape[0]
+        b = self.n_envs if envs_idx is None else len(envs_idx)
+
+        idx = torch.randint(0, n_poses, (b,), device=gs.device)
+        hold_r = r_data[idx]
+        hold_l = l_data[idx]
+
+        if envs_idx is None:
+            self._right_arm_hold.copy_(hold_r)
+            self._left_arm_hold.copy_(hold_l)
+        else:
+            self._right_arm_hold[envs_idx] = hold_r
+            self._left_arm_hold[envs_idx] = hold_l
+
+        self.robot.set_dofs_position(
+            hold_r, dofs_idx_local=self._right_arm_dofs, zero_velocity=True, envs_idx=envs_idx,
+        )
+        self.robot.set_dofs_position(
+            hold_l, dofs_idx_local=self._left_arm_dofs, zero_velocity=True, envs_idx=envs_idx,
+        )
+        self.robot.control_dofs_position(
+            self._frozen_pos, dofs_idx_local=self._frozen_dofs, envs_idx=envs_idx,
+        )
+        self.robot.control_dofs_position(
+            hold_r, dofs_idx_local=self._right_arm_dofs, envs_idx=envs_idx,
+        )
+        self.robot.control_dofs_position(
+            hold_l, dofs_idx_local=self._left_arm_dofs, envs_idx=envs_idx,
+        )
+        # Teleport the tray's free-joint dynamics state to match the FK pose the arms imply.
+        # set_dofs_position updates arm joint FK immediately so get_pos/get_quat are correct.
+        # Writing it into qpos (qs_idx [0..6] = [x,y,z,qw,qx,qy,qz]) syncs the dynamics
+        # state — equality constraints see zero error from step 1, no traveling, no impulse.
+        tray_pos_fk  = self._tray_link.get_pos()    # (n_envs, 3)
+        tray_quat_fk = self._tray_link.get_quat()   # (n_envs, 4) xyzw
+        _tp  = tray_pos_fk  if envs_idx is None else tray_pos_fk[envs_idx]
+        _tq  = tray_quat_fk if envs_idx is None else tray_quat_fk[envs_idx]
+        # qpos quaternion is stored wxyz; get_quat() returns xyzw → reorder
+        _qx, _qy, _qz, _qw = _tq[:, 0], _tq[:, 1], _tq[:, 2], _tq[:, 3]
+        tray_qpos = torch.stack([_tp[:, 0], _tp[:, 1], _tp[:, 2], _qw, _qx, _qy, _qz], dim=1)
+        self.robot.set_qpos(tray_qpos, qs_idx_local=self._tray_qs_idx,
+                            zero_velocity=True, envs_idx=envs_idx)
+
+        if self.pose_settle_steps > 0:
+            for _ in range(self.pose_settle_steps):
+                self.scene.step(update_visualizer=False)
+
+        self._reset_ball(envs_idx)
+        self._post_physics_step()
+        return self.get_obs(), info
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 
-    def _reset_ball(self, envs_idx=None):
-        tray_pos = self.robot.get_link("tray").get_pos()
-        if envs_idx is not None:
-            tray_pos = tray_pos[envs_idx]
+    def _place_ball(self, tray_pos: torch.Tensor, tray_quat: torch.Tensor, envs_idx=None):
         b = tray_pos.shape[0]
-        xy_noise = (
-            (torch.rand(b, 2, device=tray_pos.device) - 0.5)
-            * 2
-            * torch.tensor(
-                [TRAY_SIZE[0] / 2 - BALL_RADIUS, TRAY_SIZE[1] / 2 - BALL_RADIUS],
-                device=tray_pos.device,
-            )
+        xy_noise = (torch.rand(b, 2, device=tray_pos.device) - 0.5) * 2 * torch.tensor(
+            [TRAY_SIZE[0] / 2 - BALL_RADIUS, TRAY_SIZE[1] / 2 - BALL_RADIUS],
+            device=tray_pos.device,
         )
-        ball_z = tray_pos[:, 2:3] + TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005
-        self.ball.set_pos(
-            torch.cat([tray_pos[:, :2] + xy_noise, ball_z], dim=-1),
-            zero_velocity=True,
-            envs_idx=envs_idx,
+        z_local = TRAY_SIZE[2] / 2 + BALL_RADIUS + 0.005
+        local_offset = torch.cat(
+            [xy_noise, torch.full((b, 1), z_local, device=tray_pos.device)], dim=-1
         )
-        if self.ball_vel_range > 0:
-            vel = torch.zeros(b, 6, device=tray_pos.device)
-            vel[:, :2] = (
-                (torch.rand(b, 2, device=tray_pos.device) - 0.5)
-                * 2
-                * self.ball_vel_range
-            )
-            try:
-                self.ball.set_dofs_velocity(vel, envs_idx=envs_idx)
-            except Exception:
-                self.ball.set_vel(vel[:, :3], envs_idx=envs_idx)
+        ball_pos = torch.stack([
+            gu._tc_transform_by_quat(local_offset[i], tray_quat[i]) + tray_pos[i]
+            for i in range(b)
+        ])
+        self.ball.set_pos(ball_pos, zero_velocity=True, envs_idx=envs_idx)
+
+    def _reset_ball(self, envs_idx=None):
+        tray_pos  = self._tray_link.get_pos()
+        tray_quat = self._tray_link.get_quat()
+        if envs_idx is not None:
+            tray_pos  = tray_pos[envs_idx]
+            tray_quat = tray_quat[envs_idx]
+        self._place_ball(tray_pos, tray_quat, envs_idx)
 
     def _reset_goal_marker(self, envs_idx=None):
         if not self.goal_randomization:
