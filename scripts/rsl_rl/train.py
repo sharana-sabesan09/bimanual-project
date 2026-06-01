@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--checkpoint",     type=Path, default=None)
     parser.add_argument("--action_delta",   type=float, default=0.3)
+    parser.add_argument("--debug",          type=bool, default=False)
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
@@ -84,6 +85,7 @@ def main():
         pickle.dump(train_cfg, f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
+                       debug=args.debug
                        #action_delta=args.action_delta
                        )
     env = RslRlVecEnvWrapper(raw_env)

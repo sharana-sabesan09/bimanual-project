@@ -39,6 +39,7 @@ def main():
     parser.add_argument("-n", "--num_envs", type=int,   default=4)
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--action_delta",   type=float, default=0.3)
+    parser.add_argument("--debug",          action="store_true", default=False)
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
@@ -67,12 +68,12 @@ def main():
         train_cfg = pickle.load(f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       action_delta=args.action_delta)
+                       action_delta=args.action_delta, debug=args.debug)
     env = RslRlVecEnvWrapper(raw_env)
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
     
-    runner.load(checkpoint, map_location=torch.device("cpu"))
+    runner.load(checkpoint)#, map_location=torch.device("cpu"))
     #runner.load(checkpoint)
     print(f"Loaded {checkpoint}")
     policy = runner.get_inference_policy(device=gs.device)

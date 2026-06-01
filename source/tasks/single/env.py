@@ -23,7 +23,10 @@ G1_XML = str(_ROOT / "assets" / "mujoco_menagerie" / "unitree_g1" / "g1_single_a
 
 TRAY_SIZE   = (0.36, 0.26, 0.01)
 BALL_RADIUS = 0.03
-BALL_MASS   = 0.1
+BALL_FORCE_FREQUENCY = 10
+BALL_FORCE_PERIOD = 10
+GOAL_SWITCH_PERIOD = 100
+BALL_MASS   = .1
 GOAL_PADDING = 0.03
 
 
@@ -38,6 +41,7 @@ LEFT_ARM_JOINTS  = ["left_shoulder_pitch_joint",  "left_shoulder_roll_joint",
 RIGHT_ARM_JOINTS = ["right_shoulder_pitch_joint", "right_shoulder_roll_joint",
                     "right_shoulder_yaw_joint", "right_elbow_joint",
                     "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint"]
+RIGHT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
 
 STAND_LEG_POS      = np.zeros(6,  dtype=np.float32)
 STAND_WAIST_POS    = np.zeros(3,  dtype=np.float32)
@@ -49,11 +53,15 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(self, show_viewer=True, n_envs=1, action_delta = 0.3,
                  ball_vel_range=1.0, max_episode_steps=500, goal_randomization = True,
-                 debug = False):
+                 debug = False, ball_pushing=False, goal_switching = True):
         self.ball_vel_range = ball_vel_range
         self.action_delta = action_delta
         self.goal_randomization = goal_randomization
         self.debug = debug
+        self.ball_pushing                  = ball_pushing
+        self.goal_switching = goal_switching
+        self.step_counter = torch.zeros(n_envs)
+
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
                          max_episode_steps=max_episode_steps)
 
@@ -98,6 +106,11 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
         self._right_arm_upper = torch.full((7,),  3.14159, device=gs.device)
 
+        self.robot.set_dofs_force_range(
+            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device = gs.device)*-1, 
+            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device = gs.device),
+            dofs_idx_local=self._right_arm_dofs
+        )
 
         self._ee_link = self.robot.get_link("tray")
 
@@ -113,13 +126,16 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ball_pos = torch.zeros(self.n_envs, 3, device=gs.device)
         self.ball_vel = torch.zeros(self.n_envs, 3, device=gs.device)
         self.goal_pos = torch.zeros(self.n_envs, 3, device=gs.device)
+        self.ball_force = torch.zeros(self.n_envs, 2,  device=gs.device)
         
         self.goal_marker_offset = torch.zeros(self.n_envs, 3, device=gs.device)
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(23,), dtype=np.float32)
-        self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(6,), dtype=np.float32)
+        self.action_space      = gym.spaces.Box(-1.0, 1.0, shape=(len(self.arm_pos),), dtype=np.float32)
 
         if self.debug:
+            r_tau = self.robot.get_dofs_force_range(dofs_idx_local=self._right_arm_dofs)
+            print(f"DOFS TORQUE RIGHT = {r_tau}")
             self.debug_dict = {"distance_from_goal": [[] for _ in range(self.n_envs)]}
 
     def _post_physics_step(self):
@@ -129,6 +145,18 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ball_vel = self.ball.get_vel()
         self.goal_pos = self.robot.get_link("tray").get_pos() + self.goal_marker_offset
         self.goal_marker.set_pos(self.goal_pos)
+        if self.goal_switching:
+            goal_switch_period_idx = torch.where(self.step_counter % GOAL_SWITCH_PERIOD==0)[0]
+            self._reset_goal_marker(envs_idx = goal_switch_period_idx)
+
+        ball_force_period_idx = torch.where(self.step_counter % BALL_FORCE_PERIOD == 0)[0]
+        self._apply_random_ball_force(zero=True, envs_idx = ball_force_period_idx)
+        ball_force_frequency_idx = torch.where(self.step_counter % BALL_FORCE_FREQUENCY == 0)[0]
+        self._apply_random_ball_force(envs_idx = ball_force_frequency_idx)
+
+        self.ball_force = self.ball.get_dofs_force()[:,:2]
+
+        self.step_counter += 1
 
     def _reset_env(self, envs_idx=None):
         self.robot.set_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs,
@@ -140,8 +168,11 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
 
         if envs_idx is None:
             self.prev_actions.zero_()
+            self.step_counter.zero_()
         else:
             self.prev_actions[envs_idx] = 0.0
+            self.step_counter[envs_idx] = 0
+
 
     def reset(self, envs_idx=None, seed=None, options=None):
         obs, info = super().reset(envs_idx=envs_idx, seed=seed, options=options)
@@ -258,3 +289,17 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         )
         z = torch.zeros(b, 1, device=gs.device)
         self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
+
+    def _apply_random_ball_force(self, zero = False, envs_idx = None):
+        if self.ball_pushing is False:
+            return
+        device = self.ball.get_pos().device
+        b = envs_idx.shape[0]
+        if zero:
+            force_array = (torch.zeros(b, 6, device=device))
+        else:
+            force_array = (torch.rand(b, 6, device=device) - 0.5) * 2 * BALL_MASS / 10
+
+        force_array[:,2] = 0
+
+        self.ball.control_dofs_force(force_array, envs_idx = envs_idx)
