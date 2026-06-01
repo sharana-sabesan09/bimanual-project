@@ -134,7 +134,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             gs.morphs.Sphere(radius=0.025, pos=(0.0, 0.0, 1.5), collision=False),
             surface=gs.surfaces.Default(color=(0.1, 0.9, 0.1, 0.8)),
         )
-        self.scene.build(n_envs=n_envs, env_spacing=(2.0, 2.0))
+        self.scene.build(n_envs=n_envs, env_spacing=(0.8, 1.2))
 
     def _post_build_init(self):
         def dof(name):
