@@ -100,7 +100,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         debug=False,
         ball_pushing=True,
         goal_switching=True,
-        dt=0.002,
+        dt=0.02,
     ):
         self.action_delta = action_delta
         self.ball_vel_range = ball_vel_range
