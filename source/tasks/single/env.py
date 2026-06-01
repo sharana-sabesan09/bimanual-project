@@ -87,6 +87,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         ball_pushing=False,
         goal_switching=True,
         hold_pose_dr_scale=[0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
+        dt=0.02,
     ):
         self.ball_vel_range = ball_vel_range
         self.action_delta = action_delta
@@ -105,7 +106,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.step_counter = torch.zeros(n_envs)
 
         super().__init__(
-            show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps
+            show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps, dt=dt
         )
 
     # ------------------------------------------------------------------ #

@@ -100,6 +100,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         debug=False,
         ball_pushing=True,
         goal_switching=True,
+        dt=0.002,
     ):
         self.action_delta = action_delta
         self.ball_vel_range = ball_vel_range
@@ -108,10 +109,9 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.debug = debug
         self.ball_pushing = ball_pushing
         self.goal_switching = goal_switching
-        # TODO: make self.step_counter array for envs so effects are unique
         self.step_counter = torch.zeros(n_envs)
         super().__init__(
-            show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps
+            show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps, dt=dt
         )
 
     # ------------------------------------------------------------------ #

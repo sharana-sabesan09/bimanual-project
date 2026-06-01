@@ -13,7 +13,7 @@ from abc import abstractmethod
 class BaseVecEnv(gym.Env):
 
     def __init__(
-        self, show_viewer: bool = True, n_envs: int = 1, max_episode_steps: int = 500
+        self, show_viewer: bool = True, n_envs: int = 1, max_episode_steps: int = 500, dt: float = 0.02
     ):
         super().__init__()
         self.n_envs = n_envs
@@ -27,7 +27,7 @@ class BaseVecEnv(gym.Env):
                 max_FPS=60,
             ),
             show_viewer=show_viewer,
-            sim_options=gs.options.SimOptions(dt=0.02),
+            sim_options=gs.options.SimOptions(dt=dt),
         )
 
         self._build_scene(n_envs)  # add entities + scene.build()
