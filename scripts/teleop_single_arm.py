@@ -83,7 +83,7 @@ def main():
     print("\nTeleop active — WASD/QE = position, IJKL/UO = orientation, Esc = quit\n")
 
     while not quit_flag[0]:
-        delta = np.zeros(6, dtype=np.float32)
+        delta = np.zeros(7, dtype=np.float32)
         for ch in list(keys_held):
             if ch in KEY_TO_ACTION:
                 delta += KEY_TO_ACTION[ch]

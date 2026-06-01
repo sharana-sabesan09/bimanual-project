@@ -14,6 +14,7 @@ import torch
 import genesis as gs
 import gymnasium as gym
 from pathlib import Path
+import genesis.utils.geom as gu
 
 from source.tasks.base_env import BaseVecEnv
 
@@ -75,6 +76,9 @@ STAND_WAIST_POS = np.zeros(3, dtype=np.float32)
 # TODO need to add randomization on start pose
 RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
 LEFT_ARM_HOLD_POS = np.array([-0.7, 0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
+
+
+
 
 
 class DualArmBallBalanceEnv(BaseVecEnv):
@@ -201,7 +205,13 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.ball_pos = self.ball.get_pos()
         self.ball_vel = self.ball.get_vel()
         self.tray_pos = self.robot.get_link("tray").get_pos()
-        self.goal_pos = self.tray_pos + self.goal_marker_offset
+        self.tray_quat = self.robot.get_link("tray").get_quat()
+
+        # TODO : torch.jit this
+        for i in range(self.n_envs):
+            transform = gu.transform_by_trans_quat(self.goal_marker_offset[i], self.tray_pos[i], self.tray_quat[i])
+            self.goal_pos[i] = transform[:3]
+
         self.goal_marker.set_pos(self.goal_pos)
 
         if self.goal_switching:
@@ -298,8 +308,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         return self.terminated, self.truncated
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
-        xy_dist = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
-        proximity = torch.exp(-5.0 * xy_dist)
+        dist = torch.norm(self.ball_pos[:, :3] - self.goal_pos[:, :3], dim=-1)
+        proximity = torch.exp(-5.0 * dist)
 
         vel_pen = torch.norm(self.ball_vel, dim=-1)
         action_pen = torch.norm(action_tensor, dim=-1)
@@ -327,7 +337,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
         if self.debug:
             for i in range(self.n_envs):
-                self.debug_dict["distance_from_goal"][i].append(float(xy_dist[i]))
+                self.debug_dict["distance_from_goal"][i].append(float(dist[i]))
 
         log = self.extras["log"]
         log["r_proximity"] = proximity.mean()
@@ -335,7 +345,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         log["r_action_pen"] = action_pen.mean()
         log["r_coord_pen"] = coord_pen.mean()
         log["r_fall_pen"] = fall_pen.mean()
-        log["xy_dist"] = xy_dist.mean()
+        log["dist"] = dist.mean()
 
         return final_reward
 
@@ -396,7 +406,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
                 device=gs.device,
             )
         )
-        z = torch.zeros(b, 1, device=gs.device)
+        z = torch.ones(b, 1, device=gs.device) * BALL_RADIUS
         self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
 
     def _apply_random_ball_force(self, zero=False, envs_idx=None):
