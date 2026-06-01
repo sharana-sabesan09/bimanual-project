@@ -79,7 +79,12 @@ LEFT_ARM_HOLD_POS = np.array([-0.7, 0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.flo
 
 
 
-
+@torch.jit.script
+def transform_goal_pose(n_envs: int, goal_pos, goal_marker_offset, tray_pos, tray_quat):
+    for i in range(n_envs):
+        transform = gu._tc_transform_by_quat(goal_marker_offset[i], tray_quat[i]) + tray_pos[i]
+        #transform = gu.transform_by_trans_quat(goal_marker_offset[i], tray_pos[i], tray_quat[i])
+        goal_pos[i] = transform[:3]
 
 class DualArmBallBalanceEnv(BaseVecEnv):
 
@@ -208,9 +213,12 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.tray_quat = self.robot.get_link("tray").get_quat()
 
         # TODO : torch.jit this
-        for i in range(self.n_envs):
-            transform = gu.transform_by_trans_quat(self.goal_marker_offset[i], self.tray_pos[i], self.tray_quat[i])
-            self.goal_pos[i] = transform[:3]
+        transform_goal_pose(
+            self.n_envs, self.goal_pos, 
+            self.goal_marker_offset, self.tray_pos, self.tray_quat)
+        # for i in range(self.n_envs):
+        #     transform = gu.transform_by_trans_quat(self.goal_marker_offset[i], self.tray_pos[i], self.tray_quat[i])
+        #     self.goal_pos[i] = transform[:3]
 
         self.goal_marker.set_pos(self.goal_pos)
 
