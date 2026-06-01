@@ -5,7 +5,7 @@ gym.register(
     entry_point="source.tasks.double.env:DualArmBallBalanceEnv",
     disable_env_checker=True,
     kwargs={
-        "rsl_rl_cfg_entry_point": "source.tasks.double.agents.rsl_rl_ppo_cfg:get_train_cfg",
+        "rsl_rl_cfg_entry_point": "source.tasks.double.agents.rsl_rl_ppo_mlp_cfg:get_train_cfg",
     },
 )
 
@@ -16,5 +16,14 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "rsl_rl_cfg_entry_point": "source.tasks.double.agents.rsl_rl_ppo_cfg_custom:get_train_cfg",
+    },
+)
+
+gym.register(
+    id="BallBalance-DualArm-Attention-v0",
+    entry_point="source.tasks.double.env:DualArmBallBalanceEnv",
+    disable_env_checker=True,
+    kwargs={
+        "rsl_rl_cfg_entry_point": "source.tasks.double.agents.rsl_rl_ppo_cfg_attention:get_train_cfg",
     },
 )

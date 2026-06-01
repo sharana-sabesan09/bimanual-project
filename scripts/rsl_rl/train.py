@@ -21,6 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from source.tasks.double.agents.rsl_rl_ppo_cfg_attention import get_train_cfg
+
 try:
     from importlib import metadata
     if int(metadata.version("rsl-rl-lib").split(".")[0]) < 5:
@@ -31,6 +33,11 @@ except (metadata.PackageNotFoundError, ImportError) as e:
 from rsl_rl.runners import OnPolicyRunner
 import genesis as gs
 
+import torch
+
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+torch.backends.cuda.enable_math_sdp(True)
 
 def _resolve(entry_point: str):
     """Import and return the object at 'module.path:ClassName'."""

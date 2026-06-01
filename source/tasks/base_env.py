@@ -12,7 +12,9 @@ from abc import abstractmethod
 
 class BaseVecEnv(gym.Env):
 
-    def __init__(self, show_viewer: bool = True, n_envs: int = 1, max_episode_steps: int = 500):
+    def __init__(
+        self, show_viewer: bool = True, n_envs: int = 1, max_episode_steps: int = 500
+    ):
         super().__init__()
         self.n_envs = n_envs
         self.max_episode_steps = max_episode_steps
@@ -28,12 +30,15 @@ class BaseVecEnv(gym.Env):
             sim_options=gs.options.SimOptions(dt=0.02),
         )
 
-        self._build_scene(n_envs)      # add entities + scene.build()
-        self._post_build_init()        # cache indices, set n_arm_dofs, init spaces + buffers
+        self._build_scene(n_envs)  # add entities + scene.build()
+        self._post_build_init()  # cache indices, set n_arm_dofs, init spaces + buffers
 
-        self.episode_length_buf = torch.zeros(self.n_envs, dtype=torch.int32, device=gs.device)
+        self.episode_length_buf = torch.zeros(
+            self.n_envs, dtype=torch.int32, device=gs.device
+        )
         self.terminated = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
-        self.truncated  = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
+        self.truncated = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
+        self.extras = {"log": {}}
 
         self.reset()
 
@@ -66,7 +71,8 @@ class BaseVecEnv(gym.Env):
     @abstractmethod
     def get_termination(self):
         """Compute termination signals from cached state.
-        Must set self.terminated and self.truncated and return (terminated, truncated)."""
+        Must set self.terminated and self.truncated and return (terminated, truncated).
+        """
 
     @abstractmethod
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
@@ -90,8 +96,10 @@ class BaseVecEnv(gym.Env):
         self._post_physics_step()
         return self.get_obs(), {}
 
-    def step(self, action: np.ndarray):
-        action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
+    def step(self, action: torch.Tensor | np.ndarray):
+        action_tensor = action
+        if isinstance(action, np.ndarray):
+            action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
         self._apply_action(action_tensor)
         self.scene.step()
         self._post_physics_step()
@@ -103,13 +111,13 @@ class BaseVecEnv(gym.Env):
         reward = self._compute_reward(action_tensor)
 
         terminated = self.terminated.clone()
-        truncated  = self.truncated.clone()
+        truncated = self.truncated.clone()
 
         done_idx = torch.where(terminated | truncated)[0]
         if len(done_idx) > 0:
             obs, _ = self.reset(envs_idx=done_idx)
 
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, self.extras
 
     def render(self):
         pass

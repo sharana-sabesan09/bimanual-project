@@ -5,10 +5,11 @@ Use dotted module paths in train_cfg to reference these without touching site-pa
     "actor": {"class_name": "RL_lib.custom_actor_critic.LSTMActor", ...}
     "critic": {"class_name": "RL_lib.custom_actor_critic.DeepMLPCritic", ...}
 """
+import torch
+import torch.nn as nn
 
 from rsl_rl.models.mlp_model import MLPModel
 from rsl_rl.models.rnn_model import RNNModel
-
 
 class LSTMActor(RNNModel):
     """LSTM-based actor. Thin wrapper around RNNModel that fixes rnn_type='lstm'
@@ -31,7 +32,6 @@ class LSTMActor(RNNModel):
             rnn_num_layers=num_layers,
             **kwargs,
         )
-
 
 class DeepMLPCritic(MLPModel):
     """Deeper MLP critic (4 layers vs the default 3).

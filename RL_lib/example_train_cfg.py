@@ -1,5 +1,3 @@
-
-
 def get_train_cfg(exp_name: str) -> dict:
     return {
         "algorithm": {
