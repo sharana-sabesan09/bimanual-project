@@ -34,6 +34,7 @@ class BaseVecEnv(gym.Env):
         self.episode_length_buf = torch.zeros(self.n_envs, dtype=torch.int32, device=gs.device)
         self.terminated = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
         self.truncated  = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
+        self.extras = {"log": {}}
 
         self.reset()
 
@@ -111,7 +112,7 @@ class BaseVecEnv(gym.Env):
         if len(done_idx) > 0:
             obs, _ = self.reset(envs_idx=done_idx)
 
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, self.extras
 
     def render(self):
         pass

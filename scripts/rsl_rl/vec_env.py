@@ -31,8 +31,10 @@ class RslRlVecEnvWrapper:
         return TensorDict({"policy": obs.to(self.device)}, batch_size=[self.num_envs])
 
     def step(self, actions: torch.Tensor) -> tuple:
-        obs, rewards, terminated, truncated, _ = self._env.step(actions)
+        obs, rewards, terminated, truncated, info = self._env.step(actions)
         extras = {"time_outs": truncated.float().to(self.device)}
+        if "log" in info:
+            extras["log"] = info["log"]
         return (
             TensorDict({"policy": obs.to(self.device)}, batch_size=[self.num_envs]),
             rewards.to(self.device),

@@ -214,24 +214,42 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         xy_dist   = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
         proximity = torch.exp(-5.0 * xy_dist)
 
-        vel_pen   = -0.05  * torch.norm(self.ball_vel, dim=-1)
-        action_pen = -0.0001 * torch.norm(action_tensor, dim=-1)
+        vel_pen   = torch.norm(self.ball_vel, dim=-1)
+        action_pen = torch.norm(action_tensor, dim=-1)
 
         right_action  = action_tensor[:, :7]
         left_action   = action_tensor[:, 7:]
-        coord_pen = -0.002 * torch.norm(right_action[:, :3] + left_action[:, :3], dim=-1)
+        coord_pen = torch.norm(right_action[:, :3] + left_action[:, :3], dim=-1)
 
         fall_pen = torch.where(self.terminated,
-                               torch.full_like(proximity, -10.0),
+                               torch.ones_like(proximity),
                                torch.zeros_like(proximity))
 
         self.prev_actions.copy_(action_tensor.detach())
-
+        
+        final_reward = (
+            5 * proximity 
+            
+            # penalties
+            - 0.05 * vel_pen
+            -0.0001 * action_pen
+            - 0.002 * coord_pen
+            - 10 * fall_pen
+        )
+        
         if self.debug:
             for i in range(self.n_envs):
                 self.debug_dict["distance_from_goal"][i].append(float(xy_dist[i]))
 
-        return proximity + vel_pen + action_pen + coord_pen + fall_pen
+        log = self.extras["log"]
+        log["r_proximity"] = proximity.mean()
+        log["r_vel_pen"]   = vel_pen.mean()
+        log["r_action_pen"] = action_pen.mean()
+        log["r_coord_pen"] = coord_pen.mean()
+        log["r_fall_pen"]  = fall_pen.mean()
+        log["xy_dist"]     = xy_dist.mean()
+
+        return final_reward
 
     def _return_and_reset_debug(self, env_idx):
         return_list = self.debug_dict["distance_from_goal"][env_idx].copy()
