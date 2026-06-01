@@ -314,6 +314,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
         self.prev_actions.copy_(action_tensor.detach())
 
+        # TODO tune weights 
+        # TODO add tray ball contact reward 
         final_reward = (
             5 * proximity
             # penalties
@@ -405,6 +407,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         if zero:
             force_array = torch.zeros(b, 6, device=device)
         else:
+            # TODO maybe have a force range instead of basing off ball mass
             force_array = (torch.rand(b, 6, device=device) - 0.5) * 2 * BALL_MASS / 10
 
         force_array[:, 2] = 0
