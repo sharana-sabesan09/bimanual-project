@@ -86,6 +86,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         debug=False,
         ball_pushing=False,
         goal_switching=True,
+        hold_pose_dr_scale=[0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
     ):
         self.ball_vel_range = ball_vel_range
         self.action_delta = action_delta
@@ -93,6 +94,14 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.debug = debug
         self.ball_pushing = ball_pushing
         self.goal_switching = goal_switching
+        # scalar → broadcast; list/array → per-joint; None → zeros (no DR)
+        if hold_pose_dr_scale is None:
+            self.hold_pose_dr_scale = np.zeros(len(RIGHT_ARM_JOINTS), dtype=np.float32)
+        else:
+            self.hold_pose_dr_scale = np.broadcast_to(
+                np.array(hold_pose_dr_scale, dtype=np.float32),
+                (len(RIGHT_ARM_JOINTS),),
+            ).copy()
         self.step_counter = torch.zeros(n_envs)
 
         super().__init__(
@@ -143,9 +152,16 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
             [STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS, STAND_LEFT_ARM_POS]
         )
 
-        self._right_arm_hold = torch.tensor(
+        self._right_arm_hold_base = torch.tensor(
             RIGHT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32
         )
+        # Per-env hold pose — resampled each reset for domain randomization
+        self._right_arm_hold = self._right_arm_hold_base.unsqueeze(0).expand(
+            self.n_envs, -1
+        ).clone()
+        self._hold_pose_dr_scale = torch.tensor(
+            self.hold_pose_dr_scale, device=gs.device, dtype=torch.float32
+        )  # (7,)
         self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
         self._right_arm_upper = torch.full((7,), 3.14159, device=gs.device)
 
@@ -212,14 +228,19 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.step_counter += 1
 
     def _reset_env(self, envs_idx=None):
+        self._resample_hold_pose(envs_idx)
+
         self.robot.set_dofs_position(
             self._frozen_pos,
             dofs_idx_local=self._frozen_dofs,
             zero_velocity=True,
             envs_idx=envs_idx,
         )
+        hold = (
+            self._right_arm_hold if envs_idx is None else self._right_arm_hold[envs_idx]
+        )
         self.robot.set_dofs_position(
-            RIGHT_ARM_HOLD_POS,
+            hold,
             dofs_idx_local=self._right_arm_dofs,
             zero_velocity=True,
             envs_idx=envs_idx,
@@ -311,6 +332,22 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
+
+    def _resample_hold_pose(self, envs_idx=None):
+        if not self._hold_pose_dr_scale.any():
+            return
+        idx = (
+            torch.arange(self.n_envs, device=gs.device)
+            if envs_idx is None
+            else envs_idx
+        )
+        # noise shape: (b, 7); scale broadcasts per joint
+        noise = (torch.rand(idx.shape[0], 7, device=gs.device) - 0.5) * 2 * self._hold_pose_dr_scale
+        self._right_arm_hold[idx] = torch.clamp(
+            self._right_arm_hold_base + noise,
+            self._right_arm_lower,
+            self._right_arm_upper,
+        )
 
     def _sync_ee_target(self, envs_idx=None):
         """Snap EE target state to the actual tray pose (call after scene.step())."""
