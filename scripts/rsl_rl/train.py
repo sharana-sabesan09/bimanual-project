@@ -21,8 +21,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from source.tasks.double.agents.rsl_rl_ppo_cfg_attention import get_train_cfg
-
 try:
     from importlib import metadata
     if int(metadata.version("rsl-rl-lib").split(".")[0]) < 5:
@@ -92,9 +90,7 @@ def main():
         pickle.dump(train_cfg, f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       debug=args.debug
-                       #action_delta=args.action_delta
-                       )
+                       action_delta=args.action_delta, debug=args.debug)
     env = RslRlVecEnvWrapper(raw_env)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
     checkpoint = args.checkpoint

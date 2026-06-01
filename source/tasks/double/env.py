@@ -54,14 +54,15 @@ class DualArmBallBalanceEnv(BaseVecEnv):
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
                  ball_vel_range=1.0, max_episode_steps=500,
                  action_conflict_penalty_scale=0.05, goal_randomization=True,
-                 debug = False, ball_pushing=True, goal_switching = True):
+                 debug = False, ball_pushing=False, goal_switching = True, record = False):
         self.action_delta                  = action_delta
         self.ball_vel_range                = ball_vel_range
         self.action_conflict_penalty_scale = action_conflict_penalty_scale
         self.goal_randomization            = goal_randomization
         self.debug                         = debug
         self.ball_pushing                  = ball_pushing
-        self.goal_switching = goal_switching
+        self.goal_switching                = goal_switching
+        self.record                        = record
         # TODO: make self.step_counter array for envs so effects are unique
         self.step_counter = torch.zeros(n_envs)
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
@@ -85,6 +86,14 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             gs.morphs.Sphere(radius=0.025, pos=(0.0, 0.0, 1.5), collision=False),
             surface=gs.surfaces.Default(color=(0.1, 0.9, 0.1, 0.8)),
         )
+        if self.record:
+            self.camera = self.scene.add_camera(
+                res=(640, 480),
+                pos=(2.2, -1.8, 2.0),
+                lookat=(0.0, 0.0, 0.9),
+                fov=45,
+                GUI=False,
+            )
         self.scene.build(n_envs=n_envs, env_spacing=(2.0, 2.0))
 
     def _post_build_init(self):
@@ -237,6 +246,11 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         return_list = self.debug_dict["distance_from_goal"][env_idx].copy()
         self.debug_dict["distance_from_goal"][env_idx] = []
         return return_list
+
+    def render_frame(self):
+        """Return an (H, W, 3) uint8 RGB frame. Only valid when record=True."""
+        rgb, *_ = self.camera.render(rgb=True, depth=False, segmentation=False, normal=False)
+        return rgb
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
