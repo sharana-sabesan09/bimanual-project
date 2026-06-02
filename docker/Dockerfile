@@ -11,21 +11,11 @@ ENV GIT_PYTHON_REFRESH=quiet
 
 # Install all dependencies first
 RUN pip install --no-cache-dir \
-    genesis-world==0.4.7 \
-    "rsl-rl-lib>=5.0.0" \
-    tensordict \
-    tensorboard \
-    gymnasium
+    "rsl-rl-lib>=5.0.0" tensordict tensorboard gymnasium
 
-# Force correct torch version LAST so nothing can overwrite it
-# Force correct torch version LAST so nothing can overwrite it
-RUN pip install --force-reinstall \
-    torch==2.5.1+cu121 \
-    torchvision==0.20.1+cu121 \
-    torchaudio==2.5.1+cu121 \
-    nvidia-cublas-cu12 \
-    nvidia-cuda-runtime-cu12 \
-    nvidia-cudnn-cu12 \
+RUN pip install --no-cache-dir --no-deps genesis-world==0.4.7
+
+RUN pip install --force-reinstall torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121 \
     --index-url https://download.pytorch.org/whl/cu121
 
 WORKDIR /workspace
