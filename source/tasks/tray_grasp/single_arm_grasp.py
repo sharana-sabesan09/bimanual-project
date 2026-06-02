@@ -152,10 +152,13 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         tray_offset: tuple = (0.1, 0.1, 0.02),
         tray_euler: tuple = (0.0, 0.0, 0.0),
         dt: float = 0.02,
+        substeps: int = 4,
+        debug_contacts: bool = False,
     ):
         self.action_delta       = action_delta
         self.ball_vel_range     = ball_vel_range
         self.goal_randomization = goal_randomization
+        self.debug_contacts     = debug_contacts
 
         # Convert tray offset to tensors — stored as (1, 3) / (1, 4) for batched broadcast
         self._tray_offset_local = torch.tensor(tray_offset, dtype=torch.float32)
@@ -165,7 +168,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self._tray_offset_quat_local = torch.tensor([w, x, y, z], dtype=torch.float32)
 
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
-                         max_episode_steps=max_episode_steps, dt=dt)
+                         max_episode_steps=max_episode_steps, dt=dt, substeps=substeps)
 
     # ------------------------------------------------------------------ #
     # BaseVecEnv implementation                                            #
@@ -220,31 +223,70 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self._left_hand_dofs  = [dof(n) for n in LEFT_HAND_JOINTS  if self._has_joint(n, _joint_map)]
         self._right_hand_dofs = [dof(n) for n in RIGHT_HAND_JOINTS if self._has_joint(n, _joint_map)]
 
-        self.n_arm_dofs = len(self._right_arm_dofs)
+        # Local link indices for right-hand joints (used for per-finger contact force queries)
+        self._hand_link_idxs_local = [
+            _joint_map[n].link.idx_local for n in RIGHT_HAND_JOINTS if n in _joint_map
+        ]
+        self._hand_link_names = [n for n in RIGHT_HAND_JOINTS if n in _joint_map]
 
+        self.n_arm_dofs  = len(self._right_arm_dofs)
+        self.n_hand_dofs = len(self._right_hand_dofs)
+        self.n_action_dofs = self.n_arm_dofs + self.n_hand_dofs
+
+        # Right hand is controlled via the action space, not frozen.
         self._frozen_dofs = (
             self._left_leg_dofs + self._right_leg_dofs
             + self._waist_dofs
             + self._left_arm_dofs
-            + self._left_hand_dofs + self._right_hand_dofs
+            + self._left_hand_dofs
         )
         self._frozen_pos = np.concatenate([
             STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS, STAND_LEFT_ARM_POS,
             LEFT_HAND_HOLD_POS[:len(self._left_hand_dofs)],
-            RIGHT_HAND_HOLD_POS[:len(self._right_hand_dofs)],
         ])
+
+        # Action dofs = right arm + right hand, in that order
+        self._action_dofs = self._right_arm_dofs + self._right_hand_dofs
+
+        # Joint limits for the action dofs — used to map [-1, 1] → joint position
+        _lower, _upper = self.robot.get_dofs_limit(dofs_idx_local=self._action_dofs)
+        self._action_lower = _lower.to(gs.device)   # (n_action_dofs,)
+        self._action_upper = _upper.to(gs.device)   # (n_action_dofs,)
 
         self._right_arm_hold = torch.tensor(
             RIGHT_ARM_HOLD_POS, device=gs.device, dtype=torch.float32
         ).unsqueeze(0).expand(self.n_envs, -1).clone()
 
-        self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
-        self._right_arm_upper = torch.full((7,), 3.14159, device=gs.device)
-
         self.robot.set_dofs_force_range(
             torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
             torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device),
             dofs_idx_local=self._right_arm_dofs,
+        )
+
+        _arm_kp  = [100, 100, 100, 100, 40, 40, 40]
+        _arm_kd  = [10,  10,  10,  10,  4,  4,  4]
+        _gain_dofs = (
+            self._left_leg_dofs  + self._right_leg_dofs + self._waist_dofs
+            + self._left_arm_dofs + self._right_arm_dofs
+            + self._left_hand_dofs + self._right_hand_dofs
+        )
+        _gain_kp = (
+            [200]*6 + [200]*6 + [200, 200, 200]
+            + _arm_kp + _arm_kp
+            + [20]*len(self._left_hand_dofs) + [20]*len(self._right_hand_dofs)
+        )
+        _gain_kd = (
+            [10]*6  + [10]*6  + [10,  10,  10]
+            + _arm_kd + _arm_kd
+            + [1.2]*len(self._left_hand_dofs) + [1.2]*len(self._right_hand_dofs)
+        )
+        self.robot.set_dofs_kp(
+            torch.tensor(_gain_kp, dtype=torch.float32, device=gs.device),
+            dofs_idx_local=_gain_dofs,
+        )
+        self.robot.set_dofs_kv(
+            torch.tensor(_gain_kd, dtype=torch.float32, device=gs.device),
+            dofs_idx_local=_gain_dofs,
         )
 
         # USD link names also include prim-path prefix; find by suffix.
@@ -266,13 +308,13 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self.goal_pos  = torch.zeros(self.n_envs, 3, device=gs.device)
         self.goal_offset = torch.zeros(self.n_envs, 3, device=gs.device)
 
-        self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
+        self.prev_actions = torch.zeros(self.n_envs, self.n_action_dofs, device=gs.device)
 
         self.observation_space = gym.spaces.Box(
             -np.inf, np.inf, shape=(23,), dtype=np.float32
         )
         self.action_space = gym.spaces.Box(
-            -1.0, 1.0, shape=(self.n_arm_dofs,), dtype=np.float32
+            -1.0, 1.0, shape=(self.n_action_dofs,), dtype=np.float32
         )
 
     def _has_joint(self, name: str, joint_map: dict) -> bool:
@@ -283,17 +325,11 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
     # ------------------------------------------------------------------ #
 
     def _apply_action(self, action_tensor: torch.Tensor):
-        self.robot.control_dofs_position(
-            self._frozen_pos, dofs_idx_local=self._frozen_dofs
-        )
-        self.robot.control_dofs_position(
-            torch.clamp(
-                self._right_arm_hold + action_tensor * self.action_delta,
-                self._right_arm_lower,
-                self._right_arm_upper,
-            ),
-            dofs_idx_local=self._right_arm_dofs,
-        )
+        # Map [-1, 1] → [lower, upper] for all action dofs
+        pos = self._action_lower + (action_tensor + 1.0) * 0.5 * (self._action_upper - self._action_lower)
+        self.robot.control_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs)
+        self.robot.control_dofs_position(pos[:, :self.n_arm_dofs],  dofs_idx_local=self._right_arm_dofs)
+        self.robot.control_dofs_position(pos[:, self.n_arm_dofs:],  dofs_idx_local=self._right_hand_dofs)
 
     def _post_physics_step(self):
         self.arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
@@ -305,6 +341,34 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         # Goal lives at a fixed 2D offset from tray centre
         self.goal_pos = self.tray_pos + self.goal_offset
         self.goal_marker.set_pos(self.goal_pos)
+
+        if self.debug_contacts:
+            self._print_contact_forces()
+
+    def _print_contact_forces(self):
+        # ── per-finger net contact force (all contacts on each hand link) ──
+        all_link_forces = self.robot.get_links_net_contact_force()  # (n_envs, n_links, 3)
+        hand_forces = all_link_forces[0, self._hand_link_idxs_local, :]  # (n_hand, 3)
+        hand_mags   = torch.norm(hand_forces, dim=-1)                     # (n_hand,)
+
+        # ── tray-specific total: sum |force| over valid robot↔tray contact pairs ──
+        contacts = self.robot.get_contacts(with_entity=self.tray)
+        if "valid_mask" in contacts:
+            # parallelised scene (n_envs >= 1)
+            valid = contacts["valid_mask"][0]                  # (n_contacts,)
+            fa    = contacts["force_a"][0][valid]              # (k, 3) force on robot geoms
+            fb    = contacts["force_b"][0][valid]              # (k, 3) force on tray geoms
+            tray_total = fb.norm(dim=-1).sum().item()
+        else:
+            fb = contacts["force_b"]
+            tray_total = fb.norm(dim=-1).sum().item()
+
+        print(f"\n── contact forces ─────────────────────────────")
+        print(f"  tray-contact total (robot→tray): {tray_total:8.3f} N")
+        print(f"  per-finger net (all contacts):")
+        for name, mag in zip(self._hand_link_names, hand_mags.tolist()):
+            bar = "█" * int(mag / 0.5)
+            print(f"    {name:<40s} {mag:6.3f} N  {bar}")
 
     def _spawn_tray_at_wrist(self, envs_idx=None):
         """Place the tray at palm world-frame position + world-frame offset. Call after scene.step()."""
@@ -367,6 +431,15 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self.robot.set_dofs_position(
             hold,
             dofs_idx_local=self._right_arm_dofs,
+            zero_velocity=True,
+            envs_idx=envs_idx,
+        )
+        hand_hold = torch.tensor(
+            RIGHT_HAND_HOLD_POS[:self.n_hand_dofs], device=gs.device, dtype=torch.float32
+        ).unsqueeze(0).expand(hold.shape[0], -1)
+        self.robot.set_dofs_position(
+            hand_hold,
+            dofs_idx_local=self._right_hand_dofs,
             zero_velocity=True,
             envs_idx=envs_idx,
         )

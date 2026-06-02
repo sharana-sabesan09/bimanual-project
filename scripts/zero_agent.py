@@ -32,7 +32,7 @@ def main():
     gs.init(backend=gs.cpu)
     env = EnvClass(show_viewer=True, n_envs=args.num_envs)
     obs, _ = env.reset()
-    action = np.zeros((env.n_envs, env.n_arm_dofs), dtype=np.float32)
+    action = np.zeros((env.n_envs, env.action_space.shape[0]), dtype=np.float32)
 
     while True:
         obs, reward, terminated, truncated, _ = env.step(action)
