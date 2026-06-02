@@ -67,8 +67,6 @@ RIGHT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
 STAND_LEG_POS      = np.zeros(6,  dtype=np.float32)
 STAND_WAIST_POS    = np.zeros(3,  dtype=np.float32)
 STAND_LEFT_ARM_POS = np.array([0.2, 0.2, 0.0, 1.28, 0.0, 0.0, 0.0], dtype=np.float32)
-STAND_HAND_POS     = np.zeros(12, dtype=np.float32)
-
 RIGHT_ARM_HOLD_POS = np.array([
     0,  # shoulder pitch  
     np.deg2rad(-30),  # shoulder roll
@@ -76,8 +74,39 @@ RIGHT_ARM_HOLD_POS = np.array([
     0.0,   # elbow joint 
     np.deg2rad(90),   # wrist roll 
     np.deg2rad(90),  # wrist pitch
-    np.deg2rad(30)    # wrist yaw 
+    np.deg2rad(30)    # wrist yaw
     ], dtype=np.float32)
+
+# Joints ordered as LEFT_HAND_JOINTS / RIGHT_HAND_JOINTS
+LEFT_HAND_HOLD_POS = np.array([
+    0.0,  # L_index_proximal_joint
+    0.0,  # L_index_intermediate_joint
+    0.0,  # L_middle_proximal_joint
+    0.0,  # L_middle_intermediate_joint
+    0.0,  # L_pinky_proximal_joint
+    0.0,  # L_pinky_intermediate_joint
+    0.0,  # L_ring_proximal_joint
+    0.0,  # L_ring_intermediate_joint
+    0.0,  # L_thumb_proximal_yaw_joint
+    0.0,  # L_thumb_proximal_pitch_joint
+    0.0,  # L_thumb_intermediate_joint
+    0.0,  # L_thumb_distal_joint
+], dtype=np.float32)
+
+RIGHT_HAND_HOLD_POS = np.array([
+    0.0,  # R_index_proximal_joint
+    0.0,  # R_index_intermediate_joint
+    0.0,  # R_middle_proximal_joint
+    0.0,  # R_middle_intermediate_joint
+    0.0,  # R_pinky_proximal_joint
+    0.0,  # R_pinky_intermediate_joint
+    0.0,  # R_ring_proximal_joint
+    0.0,  # R_ring_intermediate_joint
+    np.deg2rad(60),  # R_thumb_proximal_yaw_joint
+    np.deg2rad(27),  # R_thumb_proximal_pitch_joint
+    np.deg2rad(27),  # R_thumb_intermediate_joint
+    np.deg2rad(27),  # R_thumb_distal_joint
+], dtype=np.float32)
 
 
 def _rotate_vec_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
@@ -120,12 +149,12 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         ball_vel_range: float = 1.0,
         max_episode_steps: int = 500,
         goal_randomization: bool = True,
-        tray_offset: tuple = (0.1, 0.08, 0.02),
+        tray_offset: tuple = (0.1, 0.1, 0.02),
         tray_euler: tuple = (0.0, 0.0, 0.0),
         dt: float = 0.02,
     ):
-        self.action_delta      = action_delta
-        self.ball_vel_range    = ball_vel_range
+        self.action_delta       = action_delta
+        self.ball_vel_range     = ball_vel_range
         self.goal_randomization = goal_randomization
 
         # Convert tray offset to tensors — stored as (1, 3) / (1, 4) for batched broadcast
@@ -147,6 +176,8 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
 
         self.robot = self.scene.add_entity(
             gs.morphs.USD(file=G1_USD, pos=(0.0, 0.0, 1.0)),
+            visualize_contact=True,
+            vis_mode="collision"
         )
 
         self.tray = self.scene.add_entity(
@@ -185,7 +216,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self._waist_dofs     = [dof(n) for n in WAIST_JOINTS]
         self._left_arm_dofs  = [dof(n) for n in LEFT_ARM_JOINTS]
 
-        # Hand joints — freeze at zero if present
+        # Hand joints — freeze at specified pose (default zeros) if present
         self._left_hand_dofs  = [dof(n) for n in LEFT_HAND_JOINTS  if self._has_joint(n, _joint_map)]
         self._right_hand_dofs = [dof(n) for n in RIGHT_HAND_JOINTS if self._has_joint(n, _joint_map)]
 
@@ -199,8 +230,8 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         )
         self._frozen_pos = np.concatenate([
             STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS, STAND_LEFT_ARM_POS,
-            np.zeros(len(self._left_hand_dofs),  dtype=np.float32),
-            np.zeros(len(self._right_hand_dofs), dtype=np.float32),
+            LEFT_HAND_HOLD_POS[:len(self._left_hand_dofs)],
+            RIGHT_HAND_HOLD_POS[:len(self._right_hand_dofs)],
         ])
 
         self._right_arm_hold = torch.tensor(
