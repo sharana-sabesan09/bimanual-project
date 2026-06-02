@@ -67,7 +67,7 @@ RIGHT_ARM_JOINTS = [
     "right_wrist_pitch_joint",
     "right_wrist_yaw_joint",
 ]
-RIGHT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
+RIGHT_ARM_FORCE_LIMITS = [25/3, 25/3, 25/3, 25/3, 25/3, 5/3, 5/3]
 
 STAND_LEG_POS = np.zeros(6, dtype=np.float32)
 STAND_WAIST_POS = np.zeros(3, dtype=np.float32)
