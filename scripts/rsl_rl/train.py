@@ -80,7 +80,7 @@ def main():
 
     try:
         print("Initializing Genesis with GPU backend...", flush=True)
-        gs.init(backend=gs.gpu, precision="32", logging_level="warning")
+        gs.init(backend=gs.gpu, precision="32", logging_level="warning", performance_mode=True)
     except Exception as e:
         print(f"GPU init failed ({e}). Falling back to CPU...", flush=True)
         gs.init(backend=gs.cpu, precision="32", logging_level="warning")

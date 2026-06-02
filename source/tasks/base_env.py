@@ -16,6 +16,7 @@ class BaseVecEnv(gym.Env):
     def __init__(
         self, show_viewer: bool = True, n_envs: int = 1, max_episode_steps: int = 500,
         dt: float = 0.02, substeps: int = 1,
+        rigid_options: gs.options.RigidOptions | None = None,
     ):
         super().__init__()
         self.n_envs = n_envs
@@ -30,6 +31,7 @@ class BaseVecEnv(gym.Env):
             ),
             show_viewer=show_viewer,
             sim_options=gs.options.SimOptions(dt=dt, substeps=substeps),
+            rigid_options=rigid_options,
         )
 
         self._build_scene(n_envs)  # add entities + scene.build()

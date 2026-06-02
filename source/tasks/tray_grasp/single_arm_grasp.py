@@ -24,6 +24,7 @@ import genesis as gs
 import gymnasium as gym
 from pathlib import Path
 from scipy.spatial.transform import Rotation as Rot
+from genesis.utils.misc import qd_to_torch
 
 from source.tasks.base_env import BaseVecEnv
 
@@ -157,7 +158,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         tray_offset: tuple = (0.1, 0.1, 0.02),
         tray_euler: tuple = (0.0, 0.0, 0.0),
         dt: float = 0.02,
-        substeps: int = 4,
+        substeps: int = 2,
         debug_contacts: bool = False,
         debug: bool = False,
         curriculum_stage: int = 3,
@@ -177,8 +178,17 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         x, y, z, w = tray_quat_scipy
         self._tray_offset_quat_local = torch.tensor([w, x, y, z], dtype=torch.float32)
 
-        super().__init__(show_viewer=show_viewer, n_envs=n_envs,
-                         max_episode_steps=max_episode_steps, dt=dt, substeps=substeps)
+        super().__init__(
+            show_viewer=show_viewer,
+            n_envs=n_envs,
+            max_episode_steps=max_episode_steps,
+            dt=dt,
+            substeps=substeps,
+            rigid_options=gs.options.RigidOptions(
+                iterations=20,
+                ls_iterations=10,
+            ),
+        )
 
     # ------------------------------------------------------------------ #
     # BaseVecEnv implementation                                            #
@@ -383,6 +393,29 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             -1.0, 1.0, shape=(self.n_action_dofs,), dtype=np.float32
         )
 
+        # Zero-copy DLPack views into Quadrants state buffers (gs.use_zerocopy=True by default).
+        # All rigid entities share one solver; shapes after transpose:
+        #   dof fields  → (n_envs, n_total_dofs)
+        #   links fields → (n_envs, n_total_links, 3) or (n_envs, n_total_links, 4)
+        # These are live views: scene.step() writes into the same memory, no refresh needed.
+        _solver = self.robot._solver
+        self._dof_pos_tc     = qd_to_torch(_solver.dofs_state.pos,   transpose=True, copy=False)
+        self._dof_vel_tc     = qd_to_torch(_solver.dofs_state.vel,   transpose=True, copy=False)
+        self._links_pos_tc   = qd_to_torch(_solver.links_state.pos,  transpose=True, copy=False)
+        self._links_quat_tc  = qd_to_torch(_solver.links_state.quat, transpose=True, copy=False)
+        # cd_vel equals get_vel() exactly for free single-link rigid bodies (tray, ball):
+        # their link origin coincides with the COM, so the cross-product correction is zero.
+        self._links_cdvel_tc = qd_to_torch(_solver.links_state.cd_vel, transpose=True, copy=False)
+
+        # Global DOF indices for the action DOFs in the scene-level array.
+        self._action_global = torch.tensor(
+            [self.robot._dof_start + d for d in self._action_dofs],
+            dtype=torch.long, device=gs.device,
+        )
+        # Global link indices for free-body entities (ints, used as direct dim-1 indices).
+        self._tray_link_idx = self.tray.base_link_idx
+        self._ball_link_idx = self.ball.base_link_idx
+
     def _has_joint(self, name: str, joint_map: dict) -> bool:
         return name in joint_map
 
@@ -400,19 +433,19 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
     def _post_physics_step(self):
         with torch.profiler.record_function("env/post_physics_step"):
             with torch.profiler.record_function("env/post_physics/dof_reads"):
-                # 2 batched reads instead of 4 — halves the number of CPU←GPU sync points.
-                _all_pos = self.robot.get_dofs_position(dofs_idx_local=self._action_dofs)
-                _all_vel = self.robot.get_dofs_velocity(dofs_idx_local=self._action_dofs)
-                self.arm_pos  = _all_pos[:, :self.n_arm_dofs]
-                self.hand_pos = _all_pos[:, self.n_arm_dofs:]
-                self.arm_vel  = _all_vel[:, :self.n_arm_dofs]
-                self.hand_vel = _all_vel[:, self.n_arm_dofs:]
+                # Gather 19 action DOFs from the cached zerocopy view in one GPU kernel.
+                _all_pos = self._dof_pos_tc[:, self._action_global]   # (n_envs, 19)
+                _all_vel = self._dof_vel_tc[:, self._action_global]
+                self.arm_pos.copy_(_all_pos[:, :self.n_arm_dofs])
+                self.hand_pos.copy_(_all_pos[:, self.n_arm_dofs:])
+                self.arm_vel.copy_(_all_vel[:, :self.n_arm_dofs])
+                self.hand_vel.copy_(_all_vel[:, self.n_arm_dofs:])
 
             with torch.profiler.record_function("env/post_physics/entity_reads"):
-                self.tray_pos  = self.tray.get_pos()
-                self.tray_quat = self.tray.get_quat()
-                self.ball_pos  = self.ball.get_pos()
-                self.ball_vel  = self.ball.get_vel()
+                self.tray_pos.copy_(self._links_pos_tc[:,  self._tray_link_idx])
+                self.tray_quat.copy_(self._links_quat_tc[:, self._tray_link_idx])
+                self.ball_pos.copy_(self._links_pos_tc[:,  self._ball_link_idx])
+                self.ball_vel.copy_(self._links_cdvel_tc[:, self._ball_link_idx])
 
             with torch.profiler.record_function("env/post_physics/contact_forces"):
                 # Single call — tray-specific contacts only.
@@ -665,6 +698,12 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         # Update ball caches after placement so get_obs() sees the new position.
         self.ball_pos[idx] = self.ball.get_pos()[idx]
         self.ball_vel[idx] = 0.0
+
+        # Zero contact buffers for reset envs so the first obs of the new episode
+        # does not carry force values from the last frame of the previous episode.
+        self._hand_link_forces[idx].zero_()
+        self._tray_contact_force[idx] = 0.0
+        self.in_contact[idx] = False
 
         # Build obs from fully-refreshed caches — no stale state from the previous episode.
         return self.get_obs(), {}
