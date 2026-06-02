@@ -67,8 +67,8 @@ RIGHT_ARM_JOINTS = [
     "right_wrist_yaw_joint",
 ]
 # TODO this should be tuned
-RIGHT_ARM_FORCE_LIMITS = [25/3, 25/3, 25/3, 25/3, 25/3, 5/3, 5/3]
-LEFT_ARM_FORCE_LIMITS = [25/3, 25/3, 25/3, 25/3, 25/3, 5/3, 5/3]
+RIGHT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
+LEFT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
 
 
 STAND_LEG_POS = np.zeros(6, dtype=np.float32)
