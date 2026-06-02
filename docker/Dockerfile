@@ -18,10 +18,14 @@ RUN pip install --no-cache-dir \
     gymnasium
 
 # Force correct torch version LAST so nothing can overwrite it
-RUN pip install --force-reinstall --no-deps \
+# Force correct torch version LAST so nothing can overwrite it
+RUN pip install --force-reinstall \
     torch==2.5.1+cu121 \
     torchvision==0.20.1+cu121 \
     torchaudio==2.5.1+cu121 \
+    nvidia-cublas-cu12 \
+    nvidia-cuda-runtime-cu12 \
+    nvidia-cudnn-cu12 \
     --index-url https://download.pytorch.org/whl/cu121
 
 WORKDIR /workspace
