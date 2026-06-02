@@ -94,15 +94,18 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         debug=False,
         ball_pushing=False,
         goal_switching=True,
+        force_limits = True,
         hold_pose_dr_scale=[0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
         dt=0.02,
     ):
+        self.goal_switch_period = GOAL_SWITCH_PERIOD
         self.ball_vel_range = ball_vel_range
         self.action_delta = action_delta
         self.goal_randomization = goal_randomization
         self.debug = debug
         self.ball_pushing = ball_pushing
         self.goal_switching = goal_switching
+        self.force_limits = force_limits
         # scalar → broadcast; list/array → per-joint; None → zeros (no DR)
         if hold_pose_dr_scale is None:
             self.hold_pose_dr_scale = np.zeros(len(RIGHT_ARM_JOINTS), dtype=np.float32)
@@ -174,11 +177,12 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._right_arm_lower = torch.full((7,), -3.14159, device=gs.device)
         self._right_arm_upper = torch.full((7,), 3.14159, device=gs.device)
 
-        self.robot.set_dofs_force_range(
-            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
-            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device),
-            dofs_idx_local=self._right_arm_dofs,
-        )
+        if self.force_limits:
+            self.robot.set_dofs_force_range(
+                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
+                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device),
+                dofs_idx_local=self._right_arm_dofs,
+            )
 
         self._ee_link = self.robot.get_link("tray")
 

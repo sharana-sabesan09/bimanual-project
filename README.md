@@ -55,6 +55,7 @@ python scripts/random_agent.py --task BallBalance-SingleArm-v0 --num_envs 4
 python scripts/rsl_rl/train.py --task BallBalance-DualArm-v0 -n 512 --headless
 python scripts/rsl_rl/train.py --task BallBalance-DualArm-LSTM-v0 -n 512 --headless -e my_run
 python scripts/rsl_rl/play.py  --task BallBalance-DualArm-v0 --checkpoint logs/.../model_1000.pt
+python scripts/rsl_rl/eval.py --task BallBalance-DualArm-Attention-v0 --checkpoint logs/.../model_1000.py --num_iterations 100 -n 4
 
 tensorboard --logdir logs/
 ```

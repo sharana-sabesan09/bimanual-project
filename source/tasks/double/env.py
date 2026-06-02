@@ -99,8 +99,10 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         goal_randomization=True,
         debug=False,
         ball_pushing=True,
+        force_limits = True,
         goal_switching=True,
         dt=0.02,
+
     ):
         self.action_delta = action_delta
         self.ball_vel_range = ball_vel_range
@@ -110,6 +112,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.ball_pushing = ball_pushing
         self.goal_switching = goal_switching
         self.step_counter = torch.zeros(n_envs)
+        self.force_limits = force_limits
+        self.goal_switch_period = GOAL_SWITCH_PERIOD
         super().__init__(
             show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps, dt=dt
         )
@@ -165,16 +169,17 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self._left_arm_lower = torch.full((7,), -3.14159, device=gs.device)
         self._left_arm_upper = torch.full((7,), 3.14159, device=gs.device)
 
-        self.robot.set_dofs_force_range(
-            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
-            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device),
-            dofs_idx_local=self._right_arm_dofs,
-        )
-        self.robot.set_dofs_force_range(
-            torch.tensor(LEFT_ARM_FORCE_LIMITS, device=gs.device) * -1,
-            torch.tensor(LEFT_ARM_FORCE_LIMITS, device=gs.device),
-            dofs_idx_local=self._left_arm_dofs,
-        )
+        if self.force_limits:
+            self.robot.set_dofs_force_range(
+                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
+                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device),
+                dofs_idx_local=self._right_arm_dofs,
+            )
+            self.robot.set_dofs_force_range(
+                torch.tensor(LEFT_ARM_FORCE_LIMITS, device=gs.device) * -1,
+                torch.tensor(LEFT_ARM_FORCE_LIMITS, device=gs.device),
+                dofs_idx_local=self._left_arm_dofs,
+            )
 
         self.goal_marker_offset = torch.zeros(self.n_envs, 3, device=gs.device)
 

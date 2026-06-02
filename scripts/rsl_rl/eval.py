@@ -31,11 +31,9 @@ def _resolve(entry_point: str):
     module_path, attr = entry_point.rsplit(":", 1)
     return getattr(importlib.import_module(module_path), attr)
 
-def find_settle_time(distances, settle_time = 30, settle_range = 0.01):
-    # find first index at which the next 30 timesteps are within 1 cm
-    distances = np.array(distances)
+def find_goal_settle_time(distances, settle_time=15, settle_range = 0.03):
     for i in range(len(distances)-settle_time):
-        tmp = distances[i:i+settle_time]-distances[i]
+        tmp = distances[i:i+settle_time]
         if np.sum(np.abs(tmp))/settle_time < settle_range:
             return i
     return -1
@@ -51,7 +49,7 @@ def main():
     parser.add_argument("-n", "--num_envs", type=int,   default=4)
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--action_delta",   type=float, default=0.3)
-    parser.add_argument("--num_iterations", type=int, default=10)
+    parser.add_argument("--num_iterations", type=int, default=12)
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
@@ -80,7 +78,9 @@ def main():
         train_cfg = pickle.load(f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       action_delta=args.action_delta, debug = True, )
+                       action_delta=args.action_delta, ball_pushing=True,
+                       ball_vel_range = 0.0,
+                       debug = True)
     env = RslRlVecEnvWrapper(raw_env)
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
@@ -94,30 +94,53 @@ def main():
     num_iterations = args.num_iterations
     iterations = 0
     distances_from_goal_list = []
+    distances_from_goal_switch_list = []
+    full_trials = 0
     with torch.no_grad():
         while (iterations<num_iterations):
             actions = policy(obs)
+            pre_step = env.episode_length_buf
             obs, _, dones, _ = env.step(actions)
+            if torch.any(env.episode_length_buf == 499):
+                full_trials += 1
             # print(f"Dones is {dones}")
             iterations += dones.sum(dim=-1)
             done_indices = dones.nonzero()
             # print(f"Done Indices: {done_indices}")
             for env_idx in done_indices:
                 distances_from_goal_list.append(env._env._return_and_reset_debug(env_idx))
-            
+    
+    successes = 0
+    total_trials = 0
+    settle_times = []
+
+    for dist_list in distances_from_goal_list:
+        goal_switch_period = env._env.goal_switch_period
+        i = 0
+        while i < len(dist_list):
+            if i+goal_switch_period < len(dist_list):
+                settle_time = find_goal_settle_time(dist_list[i:i+goal_switch_period])
+                #distances_from_goal_switch_list.append(dist_list[i:i+goal_switch_period].copy())
+            else:
+                settle_time = find_goal_settle_time(dist_list[i:])
+            total_trials += 1
+            if settle_time != -1:
+                successes += 1
+            settle_times.append(settle_time/100 if settle_time != -1 else goal_switch_period/100)
+            i += goal_switch_period
+    
     average_dists = [statistics.fmean(distances) for distances in distances_from_goal_list]
     avg_dists_after_1_sec = [statistics.fmean(distances[100:]) for distances in distances_from_goal_list if len(distances) > 100]
     avg_iteration_length = statistics.mean(len(distances) for distances in distances_from_goal_list)
-    settle_times = []
-    for distances in distances_from_goal_list:
-        settle_time = find_settle_time(distances)
-        settle_times.append(settle_time/100 if settle_time != -1 else 5.)
+
     print(f"EVALUATION STATS: \
           \n--------------------------------\
+    \n\Full trial rate: {full_trials/iterations:.6f} \
     \nAverage distance from goal: {statistics.fmean(average_dists):.6f} \
     \nAverage distance from goal after one second: {statistics.fmean(avg_dists_after_1_sec):.6f}\
     \nAverage iteration length: {avg_iteration_length:.6f}\
     \nAverage settle time: {statistics.mean(settle_times):.6f} seconds \
+    \nSuccess Rate: {successes/total_trials:.6f} \
     ")
 
 if __name__ == "__main__":
