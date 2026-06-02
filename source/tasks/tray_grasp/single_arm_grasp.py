@@ -158,7 +158,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         tray_offset: tuple = (0.1, 0.1, 0.02),
         tray_euler: tuple = (0.0, 0.0, 0.0),
         dt: float = 0.02,
-        substeps: int = 2,
+        substeps: int = 1,
         debug_contacts: bool = False,
         debug: bool = False,
         curriculum_stage: int = 3,
@@ -185,8 +185,8 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             dt=dt,
             substeps=substeps,
             rigid_options=gs.options.RigidOptions(
-                iterations=20,
-                ls_iterations=10,
+                iterations=10,
+                ls_iterations=5,
             ),
         )
 
