@@ -15,6 +15,8 @@ import genesis as gs
 import gymnasium as gym
 from pathlib import Path
 from scipy.spatial.transform import Rotation as Rot
+import genesis.utils.geom as gu
+
 
 from source.tasks.base_env import BaseVecEnv
 
@@ -72,6 +74,12 @@ STAND_WAIST_POS = np.zeros(3, dtype=np.float32)
 STAND_LEFT_ARM_POS = np.array([0.2, 0.2, 0.0, 1.28, 0.0, 0.0, 0.0], dtype=np.float32)
 RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
 
+@torch.jit.script
+def transform_goal_pose(n_envs: int, goal_pos, goal_marker_offset, tray_pos, tray_quat):
+    for i in range(n_envs):
+        transform = gu._tc_transform_by_quat(goal_marker_offset[i], tray_quat[i]) + tray_pos[i]
+        #transform = gu.transform_by_trans_quat(goal_marker_offset[i], tray_pos[i], tray_quat[i])
+        goal_pos[i] = transform[:3]
 
 class SingleArmBallBalanceEnv(BaseVecEnv):
 
@@ -207,6 +215,12 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ball_pos = self.ball.get_pos()
         self.ball_vel = self.ball.get_vel()
         self.goal_pos = self.robot.get_link("tray").get_pos() + self.goal_marker_offset
+        self.tray_pos = self.robot.get_link("tray").get_pos()
+        self.tray_quat = self.robot.get_link("tray").get_quat()
+        transform_goal_pose(
+            self.n_envs, self.goal_pos, 
+            self.goal_marker_offset, self.tray_pos, self.tray_quat)
+    
         self.goal_marker.set_pos(self.goal_pos)
         if self.goal_switching:
             goal_switch_period_idx = torch.where(
@@ -413,7 +427,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
                 device=gs.device,
             )
         )
-        z = torch.zeros(b, 1, device=gs.device)
+        z = torch.ones(b, 1, device=gs.device)*BALL_RADIUS
         self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
 
     def _apply_random_ball_force(self, zero=False, envs_idx=None):
