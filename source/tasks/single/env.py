@@ -92,7 +92,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         max_episode_steps=500,
         goal_randomization=True,
         debug=False,
-        ball_pushing=False,
+        ball_pushing=True,
         goal_switching=True,
         force_limits = True,
         hold_pose_dr_scale=[0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
