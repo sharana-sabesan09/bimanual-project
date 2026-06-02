@@ -2,11 +2,16 @@
 Single-arm tray-grasp ball-balancing environment.
 
 Unitree G1 loaded from USD (fixed base). The tray is a separate Genesis entity
-that is kinematically pinned to the right_wrist_yaw_link each step via a
-configurable local-frame offset — no tray in the USD itself.
+spawned near the right hand at reset; the policy must grasp it and balance a ball.
 
-Action  : (b, 7) — right_arm position delta, scaled by action_delta
-Obs     : (b, 23) — right_arm_pos(7) + right_arm_vel(7) + ball_pos(3) + ball_vel(3) + goal_pos(3)
+Action  : (b, 19) — right_arm(7) + right_hand(12), each in [-1,1] → [joint_lower, joint_upper]
+Obs     : (b, 53) — arm_pos(7) + arm_vel(7) + hand_pos(12) + hand_vel(12)
+                     + tray_pos(3) + tray_z_axis(3) + ball_pos(3) + ball_vel(3) + goal_pos(3)
+
+Reward is staged (curriculum_stage 1/2/3):
+  Stage 1 — contact count (fingers touching tray) + action smoothness
+  Stage 2 — + tray upright orientation
+  Stage 3 — + ball XY proximity + ball velocity penalty
 """
 
 import numpy as np
@@ -154,11 +159,13 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         dt: float = 0.02,
         substeps: int = 4,
         debug_contacts: bool = False,
+        curriculum_stage: int = 3,
     ):
         self.action_delta       = action_delta
         self.ball_vel_range     = ball_vel_range
         self.goal_randomization = goal_randomization
         self.debug_contacts     = debug_contacts
+        self.curriculum_stage   = curriculum_stage
 
         # Convert tray offset to tensors — stored as (1, 3) / (1, 4) for batched broadcast
         self._tray_offset_local = torch.tensor(tray_offset, dtype=torch.float32)
@@ -300,18 +307,23 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self._tray_offset_quat_local = self._tray_offset_quat_local.to(gs.device)
 
         # Cached state
-        self.arm_pos   = torch.zeros(self.n_envs, 7, device=gs.device)
-        self.arm_vel   = torch.zeros(self.n_envs, 7, device=gs.device)
-        self.tray_pos  = torch.zeros(self.n_envs, 3, device=gs.device)
-        self.ball_pos  = torch.zeros(self.n_envs, 3, device=gs.device)
-        self.ball_vel  = torch.zeros(self.n_envs, 3, device=gs.device)
-        self.goal_pos  = torch.zeros(self.n_envs, 3, device=gs.device)
-        self.goal_offset = torch.zeros(self.n_envs, 3, device=gs.device)
+        self.arm_pos      = torch.zeros(self.n_envs, 7,  device=gs.device)
+        self.arm_vel      = torch.zeros(self.n_envs, 7,  device=gs.device)
+        self.hand_pos     = torch.zeros(self.n_envs, self.n_hand_dofs, device=gs.device)
+        self.hand_vel     = torch.zeros(self.n_envs, self.n_hand_dofs, device=gs.device)
+        self.tray_pos     = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.tray_z_world = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.ball_pos     = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.ball_vel     = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.goal_pos     = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.goal_offset  = torch.zeros(self.n_envs, 3,  device=gs.device)
 
         self.prev_actions = torch.zeros(self.n_envs, self.n_action_dofs, device=gs.device)
+        self._tray_init_z = torch.zeros(self.n_envs, device=gs.device)
 
+        # arm(7)+vel(7) + hand(12)+vel(12) + tray_pos(3)+tray_z(3) + ball_pos(3)+vel(3) + goal(3) = 53
         self.observation_space = gym.spaces.Box(
-            -np.inf, np.inf, shape=(23,), dtype=np.float32
+            -np.inf, np.inf, shape=(53,), dtype=np.float32
         )
         self.action_space = gym.spaces.Box(
             -1.0, 1.0, shape=(self.n_action_dofs,), dtype=np.float32
@@ -334,9 +346,17 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
     def _post_physics_step(self):
         self.arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
         self.arm_vel  = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
+        self.hand_pos = self.robot.get_dofs_position(dofs_idx_local=self._right_hand_dofs)
+        self.hand_vel = self.robot.get_dofs_velocity(dofs_idx_local=self._right_hand_dofs)
         self.tray_pos = self.tray.get_pos()
         self.ball_pos = self.ball.get_pos()
         self.ball_vel = self.ball.get_vel()
+
+        # Tray z-axis in world frame: rotate [0,0,1] by tray quaternion
+        tray_quat = self.tray.get_quat()  # (n_envs, 4) w,x,y,z
+        world_z   = torch.zeros(self.n_envs, 3, device=gs.device)
+        world_z[:, 2] = 1.0
+        self.tray_z_world = _rotate_vec_by_quat(world_z, tray_quat)
 
         # Goal lives at a fixed 2D offset from tray centre
         self.goal_pos = self.tray_pos + self.goal_offset
@@ -391,30 +411,65 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
     # ------------------------------------------------------------------ #
 
     def get_obs(self) -> torch.Tensor:
-        return torch.cat(
-            [self.arm_pos, self.arm_vel, self.ball_pos, self.ball_vel, self.goal_pos],
-            dim=-1,
-        )
+        return torch.cat([
+            self.arm_pos,      # (b,  7)
+            self.arm_vel,      # (b,  7)
+            self.hand_pos,     # (b, 12)
+            self.hand_vel,     # (b, 12)
+            self.tray_pos,     # (b,  3)
+            self.tray_z_world, # (b,  3)
+            self.ball_pos,     # (b,  3)
+            self.ball_vel,     # (b,  3)
+            self.goal_pos,     # (b,  3)
+        ], dim=-1)
 
     def get_termination(self):
-        tray_z = self.tray_pos[:, 2]
-        # TODO FIX ME THIS IS WRONG I CHANGED IT FIX ME FIX ME 
-        self.terminated = self.ball_pos[:, 2] < (tray_z - 20000)
+        z_floor = self._tray_init_z - 0.4
+        self.terminated = (self.tray_pos[:, 2] < z_floor) | (self.ball_pos[:, 2] < z_floor)
         self.truncated  = self.episode_length_buf >= self.max_episode_steps
         return self.terminated, self.truncated
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
-        xy_dist   = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
-        proximity = torch.exp(-5.0 * xy_dist)
-        vel_pen   = -0.05 * torch.norm(self.ball_vel, dim=-1)
-        action_pen = -0.0001 * torch.norm(action_tensor, dim=-1)
-        fall_pen  = torch.where(
+        # ── Stage 1: grasp contact ─────────────────────────────────────────
+        # Count right-hand fingers with significant net contact force (any contact).
+        # get_links_net_contact_force() includes all contacts, so uses 1N threshold
+        # to suppress self-contact noise between finger links.
+        all_link_forces = self.robot.get_links_net_contact_force()   # (n_envs, n_links, 3)
+        hand_mags = torch.norm(
+            all_link_forces[:, self._hand_link_idxs_local, :], dim=-1
+        )                                                              # (n_envs, n_hand)
+        n_contact = (hand_mags > 1.0).float().sum(dim=-1)             # (n_envs,)
+        r_contact = torch.clamp(n_contact / 3.0, 0.0, 1.0)           # saturates at 3 fingers
+
+        # Action-rate smoothness penalty (applied every stage)
+        action_pen = -0.0001 * torch.norm(action_tensor - self.prev_actions, dim=-1)
+
+        # Fall / drop penalty
+        fall_pen = torch.where(
             self.terminated,
-            torch.full_like(proximity, -10.0),
-            torch.zeros_like(proximity),
+            torch.full(self.terminated.shape, -10.0, device=gs.device),
+            torch.zeros(self.terminated.shape, device=gs.device),
         )
+
+        reward = r_contact + action_pen + fall_pen
+
+        # ── Stage 2: tray orientation ──────────────────────────────────────
+        if self.curriculum_stage >= 2:
+            # Penalise xy-components of tray z-axis in world frame.
+            # When tray is level, tray_z_world ≈ [0,0,1] and xy≈0 → reward≈1.
+            tilt_sq = self.tray_z_world[:, 0]**2 + self.tray_z_world[:, 1]**2
+            r_upright = torch.exp(-10.0 * tilt_sq)
+            reward = reward + 0.5 * r_upright
+
+        # ── Stage 3: ball balancing ────────────────────────────────────────
+        if self.curriculum_stage >= 3:
+            xy_dist   = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
+            r_ball_pos = 1.0 / (1.0 + 5.0 * xy_dist)
+            r_ball_vel = 1.0 / (1.0 + torch.norm(self.ball_vel, dim=-1))
+            reward = reward + r_ball_pos + 0.3 * r_ball_vel
+
         self.prev_actions.copy_(action_tensor.detach())
-        return proximity + 0.2 + vel_pen + action_pen + fall_pen
+        return reward
 
     # ------------------------------------------------------------------ #
     # Reset helpers                                                        #
@@ -458,6 +513,13 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         # Spawn the free tray near the hand and let physics take over from here.
         self._reset_goal_offset(envs_idx)
         self._spawn_tray_at_wrist(envs_idx)
+        # Refresh tray_pos cache after spawn — _post_physics_step ran before the spawn.
+        idx = torch.arange(self.n_envs, device=gs.device) if envs_idx is None else envs_idx
+        fresh = self.tray.get_pos()
+        self.tray_pos[idx]   = fresh[idx]
+        self._tray_init_z[idx] = fresh[idx, 2]
+        self.goal_pos[idx]   = self.tray_pos[idx] + self.goal_offset[idx]
+        self.goal_marker.set_pos(self.goal_pos)
         self._reset_ball(envs_idx)
         return obs, info
 
@@ -466,13 +528,11 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             torch.arange(self.n_envs, device=gs.device)
             if envs_idx is None else envs_idx
         )
-        tray_p = self.tray_pos[idx]
+        tray_p = self.tray.get_pos()[idx]  # fresh read — cache may be pre-spawn
         b = tray_p.shape[0]
         half = torch.tensor(TRAY_HALF_SIZE[:2], device=gs.device)
         xy_noise = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * (half - BALL_RADIUS)
         ball_z   = tray_p[:, 2:3] + TRAY_HALF_SIZE[2] + BALL_RADIUS + 0.005
-        # TODO FIX ME FIX ME FIX ME 
-        ball_z += -500
         self.ball.set_pos(
             torch.cat([tray_p[:, :2] + xy_noise, ball_z], dim=-1),
             zero_velocity=True,

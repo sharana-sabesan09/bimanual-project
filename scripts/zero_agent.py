@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--task",           type=str, required=True,
                         help="Gym env ID, e.g. BallBalance-DualArm-v0")
     parser.add_argument("-n", "--num_envs", type=int, default=1)
+    parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
 
     import gymnasium as gym
@@ -30,7 +31,7 @@ def main():
     )
 
     gs.init(backend=gs.cpu)
-    env = EnvClass(show_viewer=True, n_envs=args.num_envs)
+    env = EnvClass(show_viewer=not args.headless, n_envs=args.num_envs)
     obs, _ = env.reset()
     action = np.zeros((env.n_envs, env.action_space.shape[0]), dtype=np.float32)
 
