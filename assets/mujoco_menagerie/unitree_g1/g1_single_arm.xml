@@ -283,7 +283,7 @@
                           <geom class="collision" mesh="right_wrist_yaw_link"/>
                           <!-- Tray rigidly parented to right wrist — single-arm configuration -->
                           <body name="tray" pos="0.20 0 0">
-                            <geom name="tray" type="box" size="0.18 0.13 0.005" rgba="0.8 0.6 0.3 1" density="465.5"/>
+                            <geom name="tray" type="box" size="0.18 0.13 0.005" rgba="0.8 0.6 0.3 1" density="454.5"/>
                           </body>
                         </body>
                       </body>
