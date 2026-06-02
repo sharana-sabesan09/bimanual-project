@@ -1,0 +1,15 @@
+{
+    "task": "BallBalance-DualArm-Attention-v0",
+    "tray_density": 454.5,
+    "ball_mass": 0.1,
+    "ball_force": {
+        "toggle": "true",
+        "ball_force_frequency": 10,
+        "ball_force_period": 10,
+        "ball_force_max": 0.01
+    },
+    "goal_switch": "true",
+    "goal_switch_frequency": 1,
+    "goal_randomization": "true",
+    "force_limits": [25, 25, 25, 25, 25, 5, 5]
+}
