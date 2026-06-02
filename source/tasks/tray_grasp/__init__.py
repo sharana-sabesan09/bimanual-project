@@ -1,7 +1,7 @@
 import gymnasium as gym
 
 gym.register(
-    id="BallBalance-TrayGrasp-v0",
+    id="BallBalance-SingleArm-TrayGrasp-v0",
     entry_point="source.tasks.tray_grasp.single_arm_grasp:SingleArmTrayGraspEnv",
     disable_env_checker=True,
     kwargs={

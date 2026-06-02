@@ -16,6 +16,7 @@ Reward is staged (curriculum_stage 1/2/3):
 
 import numpy as np
 import torch
+import torch.profiler
 import genesis as gs
 import gymnasium as gym
 from pathlib import Path
@@ -116,9 +117,10 @@ RIGHT_HAND_HOLD_POS = np.array([
 
 def _rotate_vec_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     """Rotate vectors v (n,3) by unit quaternions q (n,4) in w,x,y,z convention."""
-    qw = q[:, 0:1]; qxyz = q[:, 1:]           # (n,1), (n,3)
-    t = 2.0 * torch.linalg.cross(qxyz, v)     # (n,3)
-    return v + qw * t + torch.linalg.cross(qxyz, t)
+    with torch.profiler.record_function("rotate_vec_by_quat"):
+        qw = q[:, 0:1]; qxyz = q[:, 1:]
+        t = 2.0 * torch.linalg.cross(qxyz, v)
+        return v + qw * t + torch.linalg.cross(qxyz, t)
 
 
 
@@ -149,6 +151,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         debug_contacts: bool = False,
         debug: bool = False,
         curriculum_stage: int = 3,
+        action_delta: float = 0.3,  # accepted for play.py compat; unused (env maps actions to joint limits directly)
     ):
         self.show_viewer        = show_viewer
         self.ball_vel_range     = ball_vel_range
@@ -218,10 +221,14 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self._left_hand_dofs  = [dof(n) for n in LEFT_HAND_JOINTS  if self._has_joint(n, _joint_map)]
         self._right_hand_dofs = [dof(n) for n in RIGHT_HAND_JOINTS if self._has_joint(n, _joint_map)]
 
-        # Local link indices for right-hand joints (used for per-finger contact force queries)
-        self._hand_link_idxs_local = [
+        # Local link indices for right-hand joints (used for per-finger contact force queries).
+        # Stored as a LongTensor so GPU indexing avoids Python-list→tensor conversion each step.
+        _hand_link_idxs_list = [
             _joint_map[n].link.idx_local for n in RIGHT_HAND_JOINTS if n in _joint_map
         ]
+        self._hand_link_idxs_local = torch.tensor(
+            _hand_link_idxs_list, dtype=torch.long, device=gs.device
+        )
         self._hand_link_names = [n for n in RIGHT_HAND_JOINTS if n in _joint_map]
 
         self.n_arm_dofs  = len(self._right_arm_dofs)
@@ -235,10 +242,12 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             + self._left_arm_dofs
             + self._left_hand_dofs
         )
-        self._frozen_pos = np.concatenate([
+        _frozen_pos_np = np.concatenate([
             STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS, STAND_LEFT_ARM_POS,
             LEFT_HAND_HOLD_POS[:len(self._left_hand_dofs)],
         ])
+        # Pre-convert to tensor so _apply_action avoids numpy→tensor conversion every step.
+        self._frozen_pos = torch.tensor(_frozen_pos_np, dtype=torch.float32, device=gs.device)
 
         # Action dofs = right arm + right hand, in that order
         self._action_dofs = self._right_arm_dofs + self._right_hand_dofs
@@ -320,6 +329,16 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             RIGHT_HAND_HOLD_POS[:self.n_hand_dofs], device=gs.device, dtype=torch.float32
         ).unsqueeze(0).expand(self.n_envs, -1).clone()
 
+        # Pre-allocated observation buffer — avoids torch.cat allocation every step.
+        # Callers (rsl-rl rollout storage) copy tensor data on assignment, so returning
+        # the same buffer each step is safe.
+        self._obs_buf = torch.zeros(self.n_envs, 53, device=gs.device)
+
+        # Total robot→tray contact force per env, populated by _post_physics_step.
+        # Using tray-specific contacts (not all-link net forces) prevents the policy
+        # from hacking r_contact via self-contact or inertial loads on the hand links.
+        self._tray_contact_force = torch.zeros(self.n_envs, device=gs.device)
+
         # arm(7)+vel(7) + hand(12)+vel(12) + tray_pos(3)+tray_z(3) + ball_pos(3)+vel(3) + goal(3) = 53
         self.observation_space = gym.spaces.Box(
             -np.inf, np.inf, shape=(53,), dtype=np.float32
@@ -336,35 +355,52 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
     # ------------------------------------------------------------------ #
 
     def _apply_action(self, action_tensor: torch.Tensor):
-        # Map [-1, 1] → [lower, upper] for all action dofs
-        pos = self._action_lower + (action_tensor + 1.0) * 0.5 * (self._action_upper - self._action_lower)
-        self.robot.control_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs)
-        self.robot.control_dofs_position(pos[:, :self.n_arm_dofs],  dofs_idx_local=self._right_arm_dofs)
-        self.robot.control_dofs_position(pos[:, self.n_arm_dofs:],  dofs_idx_local=self._right_hand_dofs)
+        with torch.profiler.record_function("env/apply_action"):
+            pos = self._action_lower + (action_tensor + 1.0) * 0.5 * (self._action_upper - self._action_lower)
+            self.robot.control_dofs_position(self._frozen_pos, dofs_idx_local=self._frozen_dofs)
+            self.robot.control_dofs_position(pos[:, :self.n_arm_dofs],  dofs_idx_local=self._right_arm_dofs)
+            self.robot.control_dofs_position(pos[:, self.n_arm_dofs:],  dofs_idx_local=self._right_hand_dofs)
 
     def _post_physics_step(self):
-        self.arm_pos  = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
-        self.arm_vel  = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
-        self.hand_pos = self.robot.get_dofs_position(dofs_idx_local=self._right_hand_dofs)
-        self.hand_vel = self.robot.get_dofs_velocity(dofs_idx_local=self._right_hand_dofs)
-        self.tray_pos  = self.tray.get_pos()
-        self.tray_quat = self.tray.get_quat()  # (n_envs, 4) w,x,y,z
-        self.ball_pos  = self.ball.get_pos()
-        self.ball_vel  = self.ball.get_vel()
+        with torch.profiler.record_function("env/post_physics_step"):
+            with torch.profiler.record_function("env/post_physics/dof_reads"):
+                # 2 batched reads instead of 4 — halves the number of CPU←GPU sync points.
+                _all_pos = self.robot.get_dofs_position(dofs_idx_local=self._action_dofs)
+                _all_vel = self.robot.get_dofs_velocity(dofs_idx_local=self._action_dofs)
+                self.arm_pos  = _all_pos[:, :self.n_arm_dofs]
+                self.hand_pos = _all_pos[:, self.n_arm_dofs:]
+                self.arm_vel  = _all_vel[:, :self.n_arm_dofs]
+                self.hand_vel = _all_vel[:, self.n_arm_dofs:]
 
-        # Tray z-axis in world frame (for obs + upright reward)
-        self.tray_z_world = _rotate_vec_by_quat(self._world_z, self.tray_quat)
+            with torch.profiler.record_function("env/post_physics/entity_reads"):
+                self.tray_pos  = self.tray.get_pos()
+                self.tray_quat = self.tray.get_quat()
+                self.ball_pos  = self.ball.get_pos()
+                self.ball_vel  = self.ball.get_vel()
 
-        # Goal in world frame: rotate tray-frame offset by current tray orientation
-        self.goal_pos = _rotate_vec_by_quat(self.goal_marker_offset, self.tray_quat) + self.tray_pos
-        if self.show_viewer:
-            self.goal_marker.set_pos(self.goal_pos)
+            with torch.profiler.record_function("env/post_physics/contact_forces"):
+                contacts = self.robot.get_contacts(with_entity=self.tray)
+                if "valid_mask" in contacts:
+                    valid  = contacts["valid_mask"]          # (n_envs, max_contacts)
+                    force_b = contacts["force_b"]            # (n_envs, max_contacts, 3)
+                    mags    = torch.norm(force_b, dim=-1)    # (n_envs, max_contacts)
+                    self._tray_contact_force = (mags * valid.float()).sum(dim=-1)  # (n_envs,)
+                else:
+                    self._tray_contact_force.zero_()
 
-        if self.debug_contacts:
-            self._print_contact_forces()
+            with torch.profiler.record_function("env/post_physics/tray_kinematics"):
+                self.tray_z_world = _rotate_vec_by_quat(self._world_z, self.tray_quat)
+                self.goal_pos = _rotate_vec_by_quat(self.goal_marker_offset, self.tray_quat) + self.tray_pos
+
+            if self.show_viewer:
+                self.goal_marker.set_pos(self.goal_pos)
+
+            if self.debug_contacts:
+                self._print_contact_forces()
 
     def _print_contact_forces(self):
         # ── per-finger net contact force (all contacts on each hand link) ──
+        # Called only when debug_contacts=True; fetches on demand to keep the hot path clean.
         all_link_forces = self.robot.get_links_net_contact_force()  # (n_envs, n_links, 3)
         hand_forces = all_link_forces[0, self._hand_link_idxs_local, :]  # (n_hand, 3)
         hand_mags   = torch.norm(hand_forces, dim=-1)                     # (n_hand,)
@@ -390,197 +426,220 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
 
     def _spawn_tray_at_wrist(self, envs_idx=None):
         """Place the tray at palm world-frame position + world-frame offset. Call after scene.step()."""
-        idx = (
-            torch.arange(self.n_envs, device=gs.device)
-            if envs_idx is None else envs_idx
-        )
-        palm_pos = self._middle_proximal_link.get_pos()[idx]  # (b, 3) — world frame
+        with torch.profiler.record_function("env/spawn_tray_at_wrist"):
+            idx = (
+                torch.arange(self.n_envs, device=gs.device)
+                if envs_idx is None else envs_idx
+            )
+            palm_pos = self._middle_proximal_link.get_pos()[idx]  # (b, 3) — world frame
 
-        # Offset is added directly in world frame, no rotation needed
-        tray_pos = palm_pos + self._tray_offset_local.to(gs.device)
+            # _tray_offset_local and _tray_offset_quat_local are already on device
+            # (moved in _post_build_init); no .to() needed here.
+            tray_pos  = palm_pos + self._tray_offset_local
+            tray_quat = self._tray_offset_quat_local.unsqueeze(0).expand(idx.shape[0], -1)
 
-        tray_quat = self._tray_offset_quat_local.to(gs.device).unsqueeze(0).expand(idx.shape[0], -1)
-
-        self.tray.set_pos(tray_pos, zero_velocity=True, envs_idx=idx)
-        self.tray.set_quat(tray_quat, zero_velocity=True, envs_idx=idx)
+            self.tray.set_pos(tray_pos, zero_velocity=True, envs_idx=idx)
+            self.tray.set_quat(tray_quat, zero_velocity=True, envs_idx=idx)
 
     # ------------------------------------------------------------------ #
     # Gym interface                                                        #
     # ------------------------------------------------------------------ #
 
     def get_obs(self) -> torch.Tensor:
-        return torch.cat([
-            self.arm_pos,      # (b,  7)
-            self.arm_vel,      # (b,  7)
-            self.hand_pos,     # (b, 12)
-            self.hand_vel,     # (b, 12)
-            self.tray_pos,     # (b,  3)
-            self.tray_z_world, # (b,  3)
-            self.ball_pos,     # (b,  3)
-            self.ball_vel,     # (b,  3)
-            self.goal_pos,     # (b,  3)
-        ], dim=-1)
+        with torch.profiler.record_function("env/get_obs"):
+            # In-place writes into the pre-allocated buffer avoid the 9-kernel torch.cat
+            # and the (n_envs, 53) heap allocation each step.
+            self._obs_buf[:, 0:7]   = self.arm_pos
+            self._obs_buf[:, 7:14]  = self.arm_vel
+            self._obs_buf[:, 14:26] = self.hand_pos
+            self._obs_buf[:, 26:38] = self.hand_vel
+            self._obs_buf[:, 38:41] = self.tray_pos
+            self._obs_buf[:, 41:44] = self.tray_z_world
+            self._obs_buf[:, 44:47] = self.ball_pos
+            self._obs_buf[:, 47:50] = self.ball_vel
+            self._obs_buf[:, 50:53] = self.goal_pos
+            return self._obs_buf
 
     def get_termination(self):
-        z_floor = self._tray_init_z - 0.4
-        self.terminated = (self.tray_pos[:, 2] < z_floor) | (self.ball_pos[:, 2] < z_floor)
-        self.truncated  = self.episode_length_buf >= self.max_episode_steps
-        return self.terminated, self.truncated
+        with torch.profiler.record_function("env/get_termination"):
+            tray_z = self.tray_pos[:, 2]
+            # Floor: tray or ball fell 0.4 m below spawn height.
+            # Ceiling: tray thrown more than 0.3 m above spawn height — plugs the
+            # exploit where the policy launches the tray upward to avoid termination.
+            self.terminated = (
+                (tray_z < self._tray_init_z - 0.4)
+                | (tray_z > self._tray_init_z + 0.3)
+                | (self.ball_pos[:, 2] < self._tray_init_z - 0.4)
+            )
+            self.truncated = self.episode_length_buf >= self.max_episode_steps
+            return self.terminated, self.truncated
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
-        # ── Stage 1: grasp contact ─────────────────────────────────────────
-        # Count right-hand fingers with significant net contact force.
-        # 1 N threshold suppresses self-contact noise between finger links.
-        all_link_forces = self.robot.get_links_net_contact_force()   # (n_envs, n_links, 3)
-        hand_mags = torch.norm(
-            all_link_forces[:, self._hand_link_idxs_local, :], dim=-1
-        )                                                              # (n_envs, n_hand)
-        n_contact  = (hand_mags > 1.0).float().sum(dim=-1)            # (n_envs,)
-        r_contact  = torch.clamp(n_contact / 3.0, 0.0, 1.0)          # saturates at 3 fingers
+        with torch.profiler.record_function("env/compute_reward"):
+            # ── Stage 1: grasp contact ─────────────────────────────────────────
+            with torch.profiler.record_function("env/reward/contact"):
+                # _tray_contact_force is the summed robot→tray contact force (N) per env.
+                # Saturates at 5 N (≈ 2-3 fingers pressing lightly). Using tray-specific
+                # contacts prevents hacking via self-contact or inertial link loads.
+                r_contact = torch.clamp(self._tray_contact_force / 5.0, 0.0, 1.0)
 
-        # Action-rate smoothness
-        r_action_pen = torch.norm(action_tensor - self.prev_actions, dim=-1)
+            with torch.profiler.record_function("env/reward/action_pen"):
+                r_action_pen = torch.norm(action_tensor - self.prev_actions, dim=-1)
 
-        # Fall / drop
-        r_fall_pen = torch.where(
-            self.terminated,
-            torch.ones(self.terminated.shape, device=gs.device),
-            torch.zeros(self.terminated.shape, device=gs.device),
-        )
+            # terminated.float() is identical to the old torch.where(cond, ones, zeros)
+            # but avoids allocating two full tensors.
+            r_fall_pen = self.terminated.float()
 
-        # ── Stage 2: tray orientation ──────────────────────────────────────
-        tilt_sq   = self.tray_z_world[:, 0]**2 + self.tray_z_world[:, 1]**2
-        r_upright = torch.exp(-10.0 * tilt_sq)
+            with torch.profiler.record_function("env/reward/upright"):
+                tilt_sq   = self.tray_z_world[:, 0]**2 + self.tray_z_world[:, 1]**2
+                r_upright = torch.exp(-10.0 * tilt_sq)
 
-        # ── Stage 3: ball balancing ────────────────────────────────────────
-        ball_dist  = torch.norm(self.ball_pos - self.goal_pos, dim=-1)
-        r_ball_pos = 1.0 / (1.0 + 5.0 * ball_dist)
-        r_ball_vel = 1.0 / (1.0 + torch.norm(self.ball_vel, dim=-1))
+            with torch.profiler.record_function("env/reward/ball"):
+                ball_dist  = torch.norm(self.ball_pos - self.goal_pos, dim=-1)
+                r_ball_pos = 1.0 / (1.0 + 5.0 * ball_dist)
+                r_ball_vel = 1.0 / (1.0 + torch.norm(self.ball_vel, dim=-1))
 
-        # ── Weights ────────────────────────────────────────────────────────
-        w_contact    = 1.0  if self.curriculum_stage >= 1 else 0.0
-        w_upright    = 0.5  if self.curriculum_stage >= 2 else 0.0
-        w_ball_pos   = 2.0  if self.curriculum_stage >= 3 else 0.0
-        w_ball_vel   = 0.3  if self.curriculum_stage >= 3 else 0.0
-        w_action_pen = 0.0001
-        w_fall_pen   = 10.0
+            w_contact    = 2.0  if self.curriculum_stage >= 1 else 0.0
+            w_upright    = 0.5  if self.curriculum_stage >= 2 else 0.0
+            w_ball_pos   = 1.0  if self.curriculum_stage >= 3 else 0.0
+            w_ball_vel   = 0.3  if self.curriculum_stage >= 3 else 0.0
+            w_action_pen = 0.01
+            w_fall_pen   = 10.0
 
-        final_reward = (
-              w_contact    * r_contact
-            + w_upright    * r_upright
-            + w_ball_pos   * r_ball_pos
-            + w_ball_vel   * r_ball_vel
-            - w_action_pen * r_action_pen
-            - w_fall_pen   * r_fall_pen
-        )
+            final_reward = (
+                  w_contact    * r_contact
+                + w_upright    * r_upright
+                + w_ball_pos   * r_ball_pos
+                + w_ball_vel   * r_ball_vel
+                - w_action_pen * r_action_pen
+                - w_fall_pen   * r_fall_pen
+            )
 
-        self.prev_actions.copy_(action_tensor.detach())
+            self.prev_actions.copy_(action_tensor.detach())
 
-        log = self.extras["log"]
-        log["r_contact"]    = r_contact.mean()
-        log["r_upright"]    = r_upright.mean()
-        log["r_ball_pos"]   = r_ball_pos.mean()
-        log["r_ball_vel"]   = r_ball_vel.mean()
-        log["r_action_pen"] = r_action_pen.mean()
-        log["r_fall_pen"]   = r_fall_pen.mean()
-        log["n_fingers"]    = n_contact.mean()
-        log["ball_dist"]    = ball_dist.mean()
-        log["tray_tilt"]    = tilt_sq.sqrt().mean()
+            log = self.extras["log"]
+            log["r_contact"]       = r_contact.mean()
+            log["r_upright"]       = r_upright.mean()
+            log["r_ball_pos"]      = r_ball_pos.mean()
+            log["r_ball_vel"]      = r_ball_vel.mean()
+            log["r_action_pen"]    = r_action_pen.mean()
+            log["r_fall_pen"]      = r_fall_pen.mean()
+            log["tray_contact_N"]  = self._tray_contact_force.mean()
+            log["ball_dist"]       = ball_dist.mean()
+            log["tray_tilt"]       = tilt_sq.sqrt().mean()
 
-        return final_reward
+            return final_reward
 
     # ------------------------------------------------------------------ #
     # Reset helpers                                                        #
     # ------------------------------------------------------------------ #
 
     def _reset_env(self, envs_idx=None):
-        self.robot.set_dofs_position(
-            self._frozen_pos,
-            dofs_idx_local=self._frozen_dofs,
-            zero_velocity=True,
-            envs_idx=envs_idx,
-        )
-        hold      = self._right_arm_hold if envs_idx is None else self._right_arm_hold[envs_idx]
-        hand_hold = self._hand_hold      if envs_idx is None else self._hand_hold[envs_idx]
-        self.robot.set_dofs_position(
-            hold,
-            dofs_idx_local=self._right_arm_dofs,
-            zero_velocity=True,
-            envs_idx=envs_idx,
-        )
-        self.robot.set_dofs_position(
-            hand_hold,
-            dofs_idx_local=self._right_hand_dofs,
-            zero_velocity=True,
-            envs_idx=envs_idx,
-        )
-        if envs_idx is None:
-            self.prev_actions.zero_()
-        else:
-            self.prev_actions[envs_idx] = 0.0
+        with torch.profiler.record_function("env/reset_env"):
+            self.robot.set_dofs_position(
+                self._frozen_pos,
+                dofs_idx_local=self._frozen_dofs,
+                zero_velocity=True,
+                envs_idx=envs_idx,
+            )
+            hold      = self._right_arm_hold if envs_idx is None else self._right_arm_hold[envs_idx]
+            hand_hold = self._hand_hold      if envs_idx is None else self._hand_hold[envs_idx]
+            self.robot.set_dofs_position(
+                hold,
+                dofs_idx_local=self._right_arm_dofs,
+                zero_velocity=True,
+                envs_idx=envs_idx,
+            )
+            self.robot.set_dofs_position(
+                hand_hold,
+                dofs_idx_local=self._right_hand_dofs,
+                zero_velocity=True,
+                envs_idx=envs_idx,
+            )
+            if envs_idx is None:
+                self.prev_actions.zero_()
+            else:
+                self.prev_actions[envs_idx] = 0.0
 
-        # Ball will be placed after first scene.step() via reset() in base class
+            # Ball will be placed after first scene.step() via reset() in base class
 
     def reset(self, envs_idx=None, seed=None, options=None):
         if envs_idx is None:
-            # Full reset (init / manual reset): call super() which does scene.step() for FK.
-            obs, info = super().reset(envs_idx=None, seed=seed, options=options)
+            # Full reset: super() runs _reset_env → scene.step() → _post_physics_step(),
+            # which brings all caches up to date for the hold pose.
+            super().reset(envs_idx=None, seed=seed, options=options)
         else:
-            # Partial reset (done envs during training): skip the extra scene.step().
-            # Wrist FK is already accurate from the last _post_physics_step().
+            # Partial reset (done envs during training): no extra scene.step().
             self._reset_env(envs_idx)
             self.episode_length_buf[envs_idx] = 0
-            obs, info = self.get_obs(), {}
+            # Directly write the known hold-pose into caches so get_obs() at the end
+            # of this method sees correct arm/hand state, not stale last-episode values.
+            self.arm_pos[envs_idx]  = self._right_arm_hold[envs_idx]
+            self.arm_vel[envs_idx]  = 0.0
+            self.hand_pos[envs_idx] = self._hand_hold[envs_idx]
+            self.hand_vel[envs_idx] = 0.0
+
+        idx = torch.arange(self.n_envs, device=gs.device) if envs_idx is None else envs_idx
 
         self._reset_goal_offset(envs_idx)
         self._spawn_tray_at_wrist(envs_idx)
-        idx = torch.arange(self.n_envs, device=gs.device) if envs_idx is None else envs_idx
-        self.tray_pos[idx]  = self.tray.get_pos()[idx]
-        self.tray_quat[idx] = self.tray.get_quat()[idx]
-        self._tray_init_z[idx] = self.tray_pos[idx, 2]
-        self.goal_pos[idx]  = (
+
+        # Update tray caches after spawn.
+        self.tray_pos[idx]      = self.tray.get_pos()[idx]
+        self.tray_quat[idx]     = self.tray.get_quat()[idx]
+        self.tray_z_world[idx]  = _rotate_vec_by_quat(self._world_z[idx], self.tray_quat[idx])
+        self._tray_init_z[idx]  = self.tray_pos[idx, 2]
+        self.goal_pos[idx]      = (
             _rotate_vec_by_quat(self.goal_marker_offset[idx], self.tray_quat[idx])
             + self.tray_pos[idx]
         )
         if self.show_viewer:
             self.goal_marker.set_pos(self.goal_pos)
+
         self._reset_ball(envs_idx)
-        return obs, info
+
+        # Update ball caches after placement so get_obs() sees the new position.
+        self.ball_pos[idx] = self.ball.get_pos()[idx]
+        self.ball_vel[idx] = 0.0
+
+        # Build obs from fully-refreshed caches — no stale state from the previous episode.
+        return self.get_obs(), {}
 
     def _reset_ball(self, envs_idx=None):
-        idx = (
-            torch.arange(self.n_envs, device=gs.device)
-            if envs_idx is None else envs_idx
-        )
-        tray_p = self.tray.get_pos()[idx]  # fresh read — cache may be pre-spawn
-        b = tray_p.shape[0]
-        half = torch.tensor(TRAY_HALF_SIZE[:2], device=gs.device)
-        xy_noise = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * (half - BALL_RADIUS)
-        ball_z   = tray_p[:, 2:3] + TRAY_HALF_SIZE[2] + BALL_RADIUS + 0.005
-        self.ball.set_pos(
-            torch.cat([tray_p[:, :2] + xy_noise, ball_z], dim=-1),
-            zero_velocity=True,
-            envs_idx=idx,
-        )
-        if self.ball_vel_range > 0:
-            vel = torch.zeros(b, 6, device=gs.device)
-            vel[:, :2] = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * self.ball_vel_range
-            try:
-                self.ball.set_dofs_velocity(vel, envs_idx=idx)
-            except Exception:
-                self.ball.set_vel(vel[:, :3], envs_idx=idx)
+        with torch.profiler.record_function("env/reset_ball"):
+            idx = (
+                torch.arange(self.n_envs, device=gs.device)
+                if envs_idx is None else envs_idx
+            )
+            tray_p = self.tray.get_pos()[idx]  # fresh read — cache may be pre-spawn
+            b = tray_p.shape[0]
+            half = torch.tensor(TRAY_HALF_SIZE[:2], device=gs.device)
+            xy_noise = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * (half - BALL_RADIUS)
+            ball_z   = tray_p[:, 2:3] + TRAY_HALF_SIZE[2] + BALL_RADIUS + 0.005
+            self.ball.set_pos(
+                torch.cat([tray_p[:, :2] + xy_noise, ball_z], dim=-1),
+                zero_velocity=True,
+                envs_idx=idx,
+            )
+            if self.ball_vel_range > 0:
+                vel = torch.zeros(b, 6, device=gs.device)
+                vel[:, :2] = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * self.ball_vel_range
+                try:
+                    self.ball.set_dofs_velocity(vel, envs_idx=idx)
+                except Exception:
+                    self.ball.set_vel(vel[:, :3], envs_idx=idx)
 
     def _reset_goal_offset(self, envs_idx=None):
-        idx = (
-            torch.arange(self.n_envs, device=gs.device)
-            if envs_idx is None else envs_idx
-        )
-        b = idx.shape[0]
-        if self.goal_randomization:
-            half = torch.tensor(TRAY_HALF_SIZE[:2], device=gs.device) - GOAL_PADDING
-            xy = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * half
-        else:
-            xy = torch.zeros(b, 2, device=gs.device)
-        # z offset in tray frame: top surface + ball radius = ball centre above tray
-        z = torch.full((b, 1), TRAY_HALF_SIZE[2] + BALL_RADIUS, device=gs.device)
-        self.goal_marker_offset[idx] = torch.cat([xy, z], dim=-1)
+        with torch.profiler.record_function("env/reset_goal_offset"):
+            idx = (
+                torch.arange(self.n_envs, device=gs.device)
+                if envs_idx is None else envs_idx
+            )
+            b = idx.shape[0]
+            if self.goal_randomization:
+                half = torch.tensor(TRAY_HALF_SIZE[:2], device=gs.device) - GOAL_PADDING
+                xy = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * half
+            else:
+                xy = torch.zeros(b, 2, device=gs.device)
+            z = torch.full((b, 1), TRAY_HALF_SIZE[2] + BALL_RADIUS, device=gs.device)
+            self.goal_marker_offset[idx] = torch.cat([xy, z], dim=-1)

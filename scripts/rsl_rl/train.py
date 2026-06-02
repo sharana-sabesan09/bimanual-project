@@ -57,6 +57,9 @@ def main():
     parser.add_argument("--checkpoint",     type=Path, default=None)
     parser.add_argument("--action_delta",   type=float, default=0.3)
     parser.add_argument("--debug",          type=bool, default=False)
+    parser.add_argument("--profile",        type=int,   default=0,
+                        help="If >0, profile this many PPO iterations and write "
+                             "chrome trace to logs/<task>/<run>/profile.json")
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
@@ -107,7 +110,33 @@ def main():
         runner.load(checkpoint)
 
     print(f"Training: task={args.task} run={run_name} device={gs.device} num_envs={args.num_envs}", flush=True)
-    runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
+
+    if args.profile > 0:
+        from torch.profiler import profile, ProfilerActivity, schedule
+        trace_path = str(log_dir / "profile.json")
+        # `--profile N` captures N env steps of active data after a 10-step warmup.
+        # The schedule fires on raw_env._profiler.step() called inside BaseVecEnv.step(),
+        # so the granularity is one env step (not one PPO iteration).
+        # N=30 produces a ~5-20 MB trace that chrome://tracing and Perfetto can open.
+        prof_schedule = schedule(wait=0, warmup=10, active=args.profile, repeat=1)
+
+        def _on_trace_ready(p):
+            p.export_chrome_trace(trace_path)
+            print(f"Profile trace written to: {trace_path}", flush=True)
+            print("Open in chrome://tracing or https://ui.perfetto.dev", flush=True)
+
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=prof_schedule,
+            on_trace_ready=_on_trace_ready,
+            record_shapes=False,
+            with_stack=False,
+        ) as prof:
+            raw_env._profiler = prof
+            runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
+        raw_env._profiler = None
+    else:
+        runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
 
 if __name__ == "__main__":

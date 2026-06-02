@@ -5,6 +5,7 @@ Subclasses provide all domain logic — this file knows nothing about balls, rob
 
 import numpy as np
 import torch
+import torch.profiler
 import genesis as gs
 import gymnasium as gym
 from abc import abstractmethod
@@ -40,6 +41,9 @@ class BaseVecEnv(gym.Env):
         self.terminated = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
         self.truncated = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
         self.extras = {"log": {}}
+
+        # Set by train.py --profile to drive the profiler schedule per env step.
+        self._profiler = None
 
         self.reset()
 
@@ -88,37 +92,48 @@ class BaseVecEnv(gym.Env):
         """Update all cached physics state after each scene.step(). Override in subclass."""
 
     def reset(self, envs_idx=None, seed=None, options=None):
-        self._reset_env(envs_idx)
-        if envs_idx is None:
-            self.episode_length_buf.zero_()
-        else:
-            self.episode_length_buf[envs_idx] = 0
-        self.scene.step()
-        self._post_physics_step()
-        return self.get_obs(), {}
+        with torch.profiler.record_function("base/reset"):
+            self._reset_env(envs_idx)
+            if envs_idx is None:
+                self.episode_length_buf.zero_()
+            else:
+                self.episode_length_buf[envs_idx] = 0
+            with torch.profiler.record_function("base/reset/scene_step"):
+                self.scene.step()
+            self._post_physics_step()
+            return self.get_obs(), {}
 
     def step(self, action: torch.Tensor | np.ndarray):
-        action_tensor = action
-        if isinstance(action, np.ndarray):
-            action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
-        self._apply_action(action_tensor)
-        self.scene.step()
-        self._post_physics_step()
+        with torch.profiler.record_function("base/step"):
+            action_tensor = action
+            if isinstance(action, np.ndarray):
+                action_tensor = torch.tensor(action, device=gs.device, dtype=torch.float32)
 
-        self.episode_length_buf += 1
-        obs = self.get_obs()
+            self._apply_action(action_tensor)
 
-        self.get_termination()
-        reward = self._compute_reward(action_tensor)
+            with torch.profiler.record_function("base/step/scene_step"):
+                self.scene.step()
 
-        terminated = self.terminated.clone()
-        truncated = self.truncated.clone()
+            self._post_physics_step()
 
-        done_idx = torch.where(terminated | truncated)[0]
-        if len(done_idx) > 0:
-            obs, _ = self.reset(envs_idx=done_idx)
+            self.episode_length_buf += 1
+            obs = self.get_obs()
 
-        return obs, reward, terminated, truncated, self.extras
+            self.get_termination()
+            reward = self._compute_reward(action_tensor)
+
+            terminated = self.terminated.clone()
+            truncated = self.truncated.clone()
+
+            done_idx = torch.where(terminated | truncated)[0]
+            if len(done_idx) > 0:
+                with torch.profiler.record_function("base/step/partial_reset"):
+                    obs, _ = self.reset(envs_idx=done_idx)
+
+            if self._profiler is not None:
+                self._profiler.step()
+
+            return obs, reward, terminated, truncated, self.extras
 
     def render(self):
         pass
