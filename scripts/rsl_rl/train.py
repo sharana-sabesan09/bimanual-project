@@ -92,7 +92,7 @@ def main():
         pickle.dump(train_cfg, f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       debug=args.debug
+                       debug=args.debug, ball_pushing=True
                        #action_delta=args.action_delta
                        )
     env = RslRlVecEnvWrapper(raw_env)
