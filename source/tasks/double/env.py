@@ -24,7 +24,7 @@ G1_XML = str(_ROOT / "assets" / "mujoco_menagerie" / "unitree_g1" / "g1_dual_arm
 TRAY_SIZE = (0.36, 0.26, 0.01)
 BALL_RADIUS = 0.03
 GOAL_PADDING = 0.03
-BALL_MASS = 0.3
+BALL_MASS = 0.1
 BALL_FORCE_FREQUENCY = 10
 BALL_FORCE_PERIOD = 10
 GOAL_SWITCH_PERIOD = 100
@@ -67,8 +67,8 @@ RIGHT_ARM_JOINTS = [
     "right_wrist_yaw_joint",
 ]
 # TODO this should be tuned
-RIGHT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
-LEFT_ARM_FORCE_LIMITS = [25, 25, 25, 25, 25, 5, 5]
+RIGHT_ARM_FORCE_LIMITS = [25/3, 25/3, 25/3, 25/3, 25/3, 5/3, 5/3]
+LEFT_ARM_FORCE_LIMITS = [25/3, 25/3, 25/3, 25/3, 25/3, 5/3, 5/3]
 
 
 STAND_LEG_POS = np.zeros(6, dtype=np.float32)
