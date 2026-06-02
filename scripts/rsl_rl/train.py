@@ -53,8 +53,11 @@ def main():
     parser.add_argument("--max_iterations", type=int,   default=1000)
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--checkpoint",     type=Path, default=None)
-    parser.add_argument("--action_delta",   type=float, default=0.3)
-    parser.add_argument("--debug",          type=bool, default=False)
+    parser.add_argument("--action_delta",      type=float, default=0.3)
+    parser.add_argument("--ball_mass",         type=float, default=0.1)
+    parser.add_argument("--force_limit_scale", type=float, default=1.0,
+                        help="Scale factor for joint force limits (e.g. 0.33, 0.67, 0.0)")
+    parser.add_argument("--debug",             type=bool,  default=False)
     args = parser.parse_args()
 
     # importing source triggers all gym.register() calls
@@ -90,7 +93,8 @@ def main():
         pickle.dump(train_cfg, f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       action_delta=args.action_delta, debug=args.debug)
+                       action_delta=args.action_delta, debug=args.debug,
+                       ball_mass=args.ball_mass, force_limit_scale=args.force_limit_scale)
     env = RslRlVecEnvWrapper(raw_env)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
     checkpoint = args.checkpoint
@@ -104,6 +108,33 @@ def main():
 
     print(f"Training: task={args.task} run={run_name} device={gs.device} num_envs={args.num_envs}", flush=True)
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
+
+    # Save model_best.pt — the saved checkpoint nearest the peak mean-reward iteration.
+    try:
+        import glob
+        import re
+        import shutil
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+        ea = EventAccumulator(str(log_dir))
+        ea.Reload()
+        events = ea.Scalars("Train/mean_reward")
+
+        # Discover the checkpoints that actually exist on disk (don't assume the grid)
+        saved = [(int(m.group(1)), p) for p in glob.glob(str(log_dir / "model_*.pt"))
+                 if (m := re.search(r"model_(\d+)\.pt$", p))]
+
+        if events and saved:
+            best_it = max(events, key=lambda e: e.value).step
+            best_reward = max(e.value for e in events)
+            # Pick the saved checkpoint whose iteration is closest to the peak
+            best_ckpt_it, best_src = min(saved, key=lambda x: abs(x[0] - best_it))
+            best_dst = log_dir / "model_best.pt"
+            shutil.copy(best_src, best_dst)
+            print(f"Best model (peak reward {best_reward:.3f} @ iter {best_it}; "
+                  f"nearest checkpoint iter {best_ckpt_it}) → {best_dst}")
+    except Exception as e:
+        print(f"Warning: could not save model_best.pt — {e}")
 
 
 if __name__ == "__main__":

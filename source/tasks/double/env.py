@@ -14,6 +14,7 @@ import torch
 import genesis as gs
 import gymnasium as gym
 from pathlib import Path
+import genesis.utils.geom as gu
 
 from source.tasks.base_env import BaseVecEnv
 
@@ -54,7 +55,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
     def __init__(self, show_viewer=True, n_envs=1, action_delta=0.3,
                  ball_vel_range=1.0, max_episode_steps=500,
                  action_conflict_penalty_scale=0.05, goal_randomization=True,
-                 debug = False, ball_pushing=False, goal_switching = True, record = False):
+                 debug=False, ball_pushing=False, goal_switching=True, record=False,
+                 ball_mass=BALL_MASS, force_limit_scale=1.0):
         self.action_delta                  = action_delta
         self.ball_vel_range                = ball_vel_range
         self.action_conflict_penalty_scale = action_conflict_penalty_scale
@@ -63,6 +65,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.ball_pushing                  = ball_pushing
         self.goal_switching                = goal_switching
         self.record                        = record
+        self.ball_mass                     = ball_mass
+        self.force_limit_scale             = force_limit_scale
         # TODO: make self.step_counter array for envs so effects are unique
         self.step_counter = torch.zeros(n_envs)
         super().__init__(show_viewer=show_viewer, n_envs=n_envs,
@@ -79,7 +83,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         )
         self.ball = self.scene.add_entity(
             gs.morphs.Sphere(radius=BALL_RADIUS, pos=(0.0, 0.0, 1.5)),
-            material=gs.materials.Rigid(rho=BALL_MASS / (4/3 * np.pi * BALL_RADIUS**3)),
+            material=gs.materials.Rigid(rho=self.ball_mass / (4/3 * np.pi * BALL_RADIUS**3)),
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
         self.goal_marker = self.scene.add_entity(
@@ -117,16 +121,17 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self._left_arm_lower  = torch.full((7,), -3.14159, device=gs.device)
         self._left_arm_upper  = torch.full((7,),  3.14159, device=gs.device)
 
-        self.robot.set_dofs_force_range(
-            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device = gs.device)*-1, 
-            torch.tensor(RIGHT_ARM_FORCE_LIMITS, device = gs.device),
-            dofs_idx_local=self._right_arm_dofs
-        )
-        self.robot.set_dofs_force_range(
-            torch.tensor(LEFT_ARM_FORCE_LIMITS, device = gs.device)*-1, 
-            torch.tensor(LEFT_ARM_FORCE_LIMITS, device = gs.device),
-            dofs_idx_local=self._left_arm_dofs
-        )
+        # force_limit_scale <= 0 means "no limits" — leave the robot's default
+        # actuators unrestricted instead of clamping force to zero.
+        if self.force_limit_scale > 0:
+            right_limits = torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * self.force_limit_scale
+            left_limits  = torch.tensor(LEFT_ARM_FORCE_LIMITS,  device=gs.device) * self.force_limit_scale
+            self.robot.set_dofs_force_range(
+                -right_limits, right_limits, dofs_idx_local=self._right_arm_dofs
+            )
+            self.robot.set_dofs_force_range(
+                -left_limits, left_limits, dofs_idx_local=self._left_arm_dofs
+            )
 
         self.goal_marker_offset = torch.zeros(self.n_envs, 3, device=gs.device)
 
@@ -159,7 +164,13 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.ball_pos = self.ball.get_pos()
         self.ball_vel = self.ball.get_vel()
         self.tray_pos = self.robot.get_link("tray").get_pos()
-        self.goal_pos = self.tray_pos + self.goal_marker_offset
+        tray_quat = self.robot.get_link("tray").get_quat()
+        # Rotate the tray-local goal offset into world frame before adding tray origin
+        for i in range(self.n_envs):
+            transform = gu.transform_by_trans_quat(
+                self.goal_marker_offset[i], self.tray_pos[i], tray_quat[i]
+            )
+            self.goal_pos[i] = transform[:3]
         self.goal_marker.set_pos(self.goal_pos)
 
         if self.goal_switching:
@@ -220,8 +231,8 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         return self.terminated, self.truncated
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
-        xy_dist   = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
-        proximity = torch.exp(-5.0 * xy_dist)
+        dist      = torch.norm(self.ball_pos[:, :3] - self.goal_pos[:, :3], dim=-1)
+        proximity = torch.exp(-5.0 * dist)
 
         vel_pen   = -0.05  * torch.norm(self.ball_vel, dim=-1)
         action_pen = -0.0001 * torch.norm(action_tensor, dim=-1)
@@ -238,7 +249,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
         if self.debug:
             for i in range(self.n_envs):
-                self.debug_dict["distance_from_goal"][i].append(float(xy_dist[i]))
+                self.debug_dict["distance_from_goal"][i].append(float(dist[i]))
 
         return proximity + vel_pen + action_pen + coord_pen + fall_pen
 
@@ -285,7 +296,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             [TRAY_SIZE[0] / 2 - GOAL_PADDING, TRAY_SIZE[1] / 2 - GOAL_PADDING],
             device=gs.device,
         )
-        z = torch.zeros(b, 1, device=gs.device)
+        z = torch.ones(b, 1, device=gs.device) * BALL_RADIUS
         self.goal_marker_offset[idx] = torch.cat([xy_offset, z], dim=-1)
 
     def _apply_random_ball_force(self, zero = False, envs_idx = None):

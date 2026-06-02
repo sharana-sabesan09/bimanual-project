@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--downsample",   type=int,  default=3,
                         help="Keep every Nth frame to reduce GIF size")
     parser.add_argument("--action_delta", type=float, default=0.3)
+    parser.add_argument("--ball_mass",         type=float, default=0.1)
+    parser.add_argument("--force_limit_scale", type=float, default=1.0)
     parser.add_argument("--fps",          type=int,  default=20)
     args = parser.parse_args()
 
@@ -60,6 +62,8 @@ def main():
 
     raw_env = EnvClass(n_envs=1, show_viewer=False,
                        action_delta=args.action_delta,
+                       ball_mass=args.ball_mass,
+                       force_limit_scale=args.force_limit_scale,
                        record=True)
     env = RslRlVecEnvWrapper(raw_env)
 

@@ -83,6 +83,8 @@ def main():
     parser.add_argument("-n", "--num_envs", type=int,  default=4)
     parser.add_argument("--headless",       action="store_true", default=False)
     parser.add_argument("--action_delta",   type=float, default=0.3)
+    parser.add_argument("--ball_mass",         type=float, default=0.1)
+    parser.add_argument("--force_limit_scale", type=float, default=1.0)
     parser.add_argument("--num_episodes",   type=int,  default=50,
                         help="Total completed episodes to collect before stopping")
     args = parser.parse_args()
@@ -109,7 +111,8 @@ def main():
         train_cfg = pickle.load(f)
 
     raw_env = EnvClass(n_envs=args.num_envs, show_viewer=not args.headless,
-                       action_delta=args.action_delta, debug=True)
+                       action_delta=args.action_delta, debug=True,
+                       ball_mass=args.ball_mass, force_limit_scale=args.force_limit_scale)
     env = RslRlVecEnvWrapper(raw_env)
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
