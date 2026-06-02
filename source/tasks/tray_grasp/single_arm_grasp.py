@@ -479,15 +479,16 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             # ── Stage 1: grasp contact ─────────────────────────────────────────
             with torch.profiler.record_function("env/reward/contact"):
                 # _tray_contact_force is the summed robot→tray contact force (N) per env.
-                # Saturates at 5 N (≈ 2-3 fingers pressing lightly). Using tray-specific
-                # contacts prevents hacking via self-contact or inertial link loads.
+                # Saturates at 5 N (≈ 2-3 fingers pressing lightly).
                 r_contact = torch.clamp(self._tray_contact_force / 5.0, 0.0, 1.0)
+                # Binary gate: True when any meaningful tray contact exists (>0.5 N).
+                # Used to zero out ball rewards when the hand isn't touching the tray,
+                # preventing the policy from optimising ball position without grasping.
+                contact_gate = (self._tray_contact_force > 0.5).float()
 
             with torch.profiler.record_function("env/reward/action_pen"):
                 r_action_pen = torch.norm(action_tensor - self.prev_actions, dim=-1)
 
-            # terminated.float() is identical to the old torch.where(cond, ones, zeros)
-            # but avoids allocating two full tensors.
             r_fall_pen = self.terminated.float()
 
             with torch.profiler.record_function("env/reward/upright"):
@@ -509,8 +510,8 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             final_reward = (
                   w_contact    * r_contact
                 + w_upright    * r_upright
-                + w_ball_pos   * r_ball_pos
-                + w_ball_vel   * r_ball_vel
+                + w_ball_pos   * r_ball_pos * contact_gate
+                + w_ball_vel   * r_ball_vel * contact_gate
                 - w_action_pen * r_action_pen
                 - w_fall_pen   * r_fall_pen
             )
@@ -525,6 +526,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             log["r_action_pen"]    = r_action_pen.mean()
             log["r_fall_pen"]      = r_fall_pen.mean()
             log["tray_contact_N"]  = self._tray_contact_force.mean()
+            log["contact_gate"]    = contact_gate.mean()
             log["ball_dist"]       = ball_dist.mean()
             log["tray_tilt"]       = tilt_sq.sqrt().mean()
 
