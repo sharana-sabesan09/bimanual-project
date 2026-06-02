@@ -31,7 +31,7 @@ def main():
     )
 
     gs.init(backend=gs.cpu)
-    env = EnvClass(show_viewer=True, n_envs=args.num_envs, debug_contacts=True)
+    env = EnvClass(show_viewer=True, n_envs=args.num_envs, debug_contacts=True, debug=True)
     obs, _ = env.reset()
     action = np.tile(np.array([
          7.3888898e-02, -9.8003685e-02,  5.1653385e-04, -3.3074594e-01,
@@ -42,11 +42,28 @@ def main():
     ], dtype=np.float32), (env.n_envs, 1))
     step = [0]
 
+    hand_names = getattr(env, "_hand_link_names", [f"link_{i}" for i in range(12)])
+
     def do_step():
         obs, reward, terminated, truncated, _ = env.step(action)
         step[0] += 1
         print(f"step {step[0]:5d}  reward={reward[0]:.4f}  "
               f"terminated={terminated[0].item()}  truncated={truncated[0].item()}")
+
+        # Read contact forces directly from obs to verify correctness.
+        # Slices match the obs layout defined in single_arm_grasp.py:
+        #   [91:127] per-hand-link tray contact force vectors (12 x 3, flattened)
+        #   [127]    total summed tray contact force (N)
+        o = obs[0]  # env 0
+        per_link_flat = o[91:127].cpu().reshape(12, 3)
+        total         = o[127].item()
+
+        print(f"  obs total tray contact force : {total:8.3f} N")
+        print(f"  obs per-link tray forces (N) :")
+        for name, fvec in zip(hand_names, per_link_flat.tolist()):
+            mag = (fvec[0]**2 + fvec[1]**2 + fvec[2]**2) ** 0.5
+            bar = "█" * int(mag / 0.5)
+            print(f"    {name:<45s} [{fvec[0]:6.2f}, {fvec[1]:6.2f}, {fvec[2]:6.2f}]  |f|={mag:.3f}  {bar}")
 
     def do_reset():
         env.reset()
