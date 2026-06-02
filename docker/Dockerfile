@@ -13,7 +13,8 @@ ENV PYGLET_HEADLESS=1
 # # PyTorch nightly cu130 (bundles its own CUDA runtime via pip wheels)
 # RUN pip install --no-cache-dir torch torchvision \
 #     --index-url https://download.pytorch.org/whl/nightly/cu130
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121
 
 # Project dependencies
 RUN pip install --no-cache-dir \
