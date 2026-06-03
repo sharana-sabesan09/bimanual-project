@@ -265,7 +265,12 @@ def main():
         "model_path": "training_files/density_models/g1_single_arm_baseline.xml",
     },
     ]
-
+    try:
+        print("Initializing Genesis with GPU backend...", flush=True)
+        gs.init(backend=gs.gpu, precision="32", logging_level="warning", performance_mode=True)
+    except Exception as e:
+        print(f"GPU init failed ({e}). Falling back to CPU...", flush=True)
+        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
     for training in trainings:
         # try:
             import gymnasium as gym
@@ -280,12 +285,7 @@ def main():
                 sys.stdout.reconfigure(line_buffering=True)
             except Exception:
                 pass
-            try:
-                print("Initializing Genesis with GPU backend...", flush=True)
-                gs.init(backend=gs.gpu, precision="32", logging_level="warning", performance_mode=True)
-            except Exception as e:
-                print(f"GPU init failed ({e}). Falling back to CPU...", flush=True)
-                gs.init(backend=gs.cpu, precision="32", logging_level="warning")
+            
 
             run_name = training["name"]
 
