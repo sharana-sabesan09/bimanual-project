@@ -19,9 +19,6 @@ from genesis.utils.misc import qd_to_torch
 
 from source.tasks.base_env import BaseVecEnv
 
-_ROOT = Path(__file__).parents[3]
-G1_XML = str(_ROOT / "assets" / "mujoco_menagerie" / "unitree_g1" / "g1_dual_arm.xml")
-
 TRAY_SIZE = (0.36, 0.26, 0.01)
 BALL_RADIUS = 0.03
 GOAL_PADDING = 0.03
@@ -95,8 +92,10 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         ball_pushing=True,
         force_limits = True,
         goal_switching=True,
+        force_multiple = 1,
+        ball_mass = 0.1,
         dt=0.02,
-
+        model_path = "assets/mujoco_menagerie/unitree_g1/g1_dual_arm.xml"
     ):
         self.action_delta = action_delta
         self.ball_vel_range = ball_vel_range
@@ -108,6 +107,13 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self.show_viewer = show_viewer
         self.force_limits = force_limits
         self.goal_switch_period = GOAL_SWITCH_PERIOD
+        self.BALL_MASS = ball_mass
+        self._ROOT = Path(__file__).parents[3]
+        self.G1_XML = str(self._ROOT / model_path)
+
+        self.RIGHT_ARM_FORCE_LIMITS = [lim * force_multiple for lim in RIGHT_ARM_FORCE_LIMITS]
+        self.LEFT_ARM_FORCE_LIMITS = [lim * force_multiple for lim in LEFT_ARM_FORCE_LIMITS]
+        
         super().__init__(
             show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps, dt=dt
         )
@@ -119,12 +125,12 @@ class DualArmBallBalanceEnv(BaseVecEnv):
     def _build_scene(self, n_envs: int):
         self.scene.add_entity(gs.morphs.Plane())
         self.robot = self.scene.add_entity(
-            gs.morphs.MJCF(file=G1_XML, pos=(0.0, 0.0, 0.79)),
+            gs.morphs.MJCF(file=self.G1_XML, pos=(0.0, 0.0, 0.79)),
         )
         self.ball = self.scene.add_entity(
             gs.morphs.Sphere(radius=BALL_RADIUS, pos=(0.0, 0.0, 1.5)),
             material=gs.materials.Rigid(
-                rho=BALL_MASS / (4 / 3 * np.pi * BALL_RADIUS**3)
+                rho=self.BALL_MASS / (4 / 3 * np.pi * BALL_RADIUS**3)
             ),
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
@@ -166,13 +172,13 @@ class DualArmBallBalanceEnv(BaseVecEnv):
 
         if self.force_limits:
             self.robot.set_dofs_force_range(
-                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
-                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device),
+                torch.tensor(self.RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
+                torch.tensor(self.RIGHT_ARM_FORCE_LIMITS, device=gs.device),
                 dofs_idx_local=self._right_arm_dofs,
             )
             self.robot.set_dofs_force_range(
-                torch.tensor(LEFT_ARM_FORCE_LIMITS, device=gs.device) * -1,
-                torch.tensor(LEFT_ARM_FORCE_LIMITS, device=gs.device),
+                torch.tensor(self.LEFT_ARM_FORCE_LIMITS, device=gs.device) * -1,
+                torch.tensor(self.LEFT_ARM_FORCE_LIMITS, device=gs.device),
                 dofs_idx_local=self._left_arm_dofs,
             )
 
@@ -437,7 +443,7 @@ class DualArmBallBalanceEnv(BaseVecEnv):
             force_array = torch.zeros(b, 6, device=gs.device)
         else:
             # TODO maybe have a force range instead of basing off ball mass
-            force_array = (torch.rand(b, 6, device=gs.device) - 0.5) * 2 * BALL_MASS / 10
+            force_array = (torch.rand(b, 6, device=gs.device) - 0.5) * 2 * self.BALL_MASS / 10
 
         force_array[:, 2] = 0
 

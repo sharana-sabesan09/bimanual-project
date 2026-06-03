@@ -88,7 +88,10 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         ball_pushing=True,
         goal_switching=True,
         force_limits = True,
+        force_multiple = 1,
+        ball_mass = 0.1,
         hold_pose_dr_scale=[0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
+        model_path = "assets/mujoco_menagerie/unitree_g1/g1_single_arm.xml"
         dt=0.02,
     ):
         self.goal_switch_period = GOAL_SWITCH_PERIOD
@@ -99,6 +102,12 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ball_pushing = ball_pushing
         self.goal_switching = goal_switching
         self.force_limits = force_limits
+        self.BALL_MASS = ball_mass
+        self._ROOT = Path(__file__).parents[3]
+        self.G1_XML = str(self._ROOT / model_path)
+
+        self.RIGHT_ARM_FORCE_LIMITS = [lim * force_multiple for lim in RIGHT_ARM_FORCE_LIMITS]
+        
         # scalar → broadcast; list/array → per-joint; None → zeros (no DR)
         if hold_pose_dr_scale is None:
             self.hold_pose_dr_scale = np.zeros(len(RIGHT_ARM_JOINTS), dtype=np.float32)
@@ -120,12 +129,12 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
     def _build_scene(self, n_envs: int):
         self.scene.add_entity(gs.morphs.Plane())
         self.robot = self.scene.add_entity(
-            gs.morphs.MJCF(file=G1_XML, pos=(0.0, 0.0, 0.79)),
+            gs.morphs.MJCF(file=self.G1_XML, pos=(0.0, 0.0, 0.79)),
         )
         self.ball = self.scene.add_entity(
             gs.morphs.Sphere(radius=BALL_RADIUS, pos=(0.0, 0.0, 1.5)),
             material=gs.materials.Rigid(
-                rho=BALL_MASS / (4 / 3 * np.pi * BALL_RADIUS**3)
+                rho=self.BALL_MASS / (4 / 3 * np.pi * BALL_RADIUS**3)
             ),
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2, 1.0)),
         )
@@ -173,8 +182,8 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
 
         if self.force_limits:
             self.robot.set_dofs_force_range(
-                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
-                torch.tensor(RIGHT_ARM_FORCE_LIMITS, device=gs.device),
+                torch.tensor(self.RIGHT_ARM_FORCE_LIMITS, device=gs.device) * -1,
+                torch.tensor(self.RIGHT_ARM_FORCE_LIMITS, device=gs.device),
                 dofs_idx_local=self._right_arm_dofs,
             )
 
@@ -453,7 +462,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         if zero:
             force_array = torch.zeros(b, 6, device=gs.device)
         else:
-            force_array = (torch.rand(b, 6, device=gs.device) - 0.5) * 2 * BALL_MASS / 10
+            force_array = (torch.rand(b, 6, device=gs.device) - 0.5) * 2 * self.BALL_MASS / 10
 
         force_array[:, 2] = 0
 
