@@ -60,6 +60,7 @@ def main():
     training = {
         "task": "BallBalance-DualArm-Attention-v0",
         "name": "dual-density-2k",
+        "category": "density",
         "num_envs": 10,
         "num_iterations": 100,
         "force_multiple": 1,
@@ -152,6 +153,7 @@ def main():
     avg_iteration_length = statistics.mean(len(distances) for distances in distances_from_goal_list)
 
     eval_dict = {
+        "category": training["category"],
         "full_trial_rate": float(full_trials/iterations),
         "avg_dist_from_goal": statistics.fmean(average_dists),
         "avg_dist_from_goal_1_sec": statistics.fmean(avg_dists_after_1_sec),
