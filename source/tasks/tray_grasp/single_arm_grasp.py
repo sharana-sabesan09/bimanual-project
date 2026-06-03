@@ -26,6 +26,7 @@ import gymnasium as gym
 from pathlib import Path
 from scipy.spatial.transform import Rotation as Rot
 from genesis.utils.misc import qd_to_torch
+import genesis.utils.geom as gu
 
 from source.tasks.base_env import BaseVecEnv
 
@@ -129,14 +130,6 @@ RIGHT_HAND_HOLD_POS = np.array([
 ], dtype=np.float32)
 
 
-def _rotate_vec_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-    """Rotate vectors v (n,3) by unit quaternions q (n,4) in w,x,y,z convention."""
-    with torch.profiler.record_function("rotate_vec_by_quat"):
-        qw = q[:, 0:1]; qxyz = q[:, 1:]
-        t = 2.0 * torch.linalg.cross(qxyz, v)
-        return v + qw * t + torch.linalg.cross(qxyz, t)
-
-
 
 class SingleArmTrayGraspEnv(BaseVecEnv):
     """
@@ -166,6 +159,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         debug: bool = False,
         curriculum_stage: int = 3,
         action_delta: float = 0.3,  # accepted for play.py compat; unused (env maps actions to joint limits directly)
+        ball_pushing: bool = False,  # accepted for train.py compat; unused
     ):
         self.show_viewer        = show_viewer
         self.ball_vel_range     = ball_vel_range
@@ -501,8 +495,8 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
                     self.ball_on_tray = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
 
             with torch.profiler.record_function("env/post_physics/tray_kinematics"):
-                self.tray_z_world = _rotate_vec_by_quat(self._world_z, self.tray_quat)
-                self.goal_pos = _rotate_vec_by_quat(self.goal_marker_offset, self.tray_quat) + self.tray_pos
+                self.tray_z_world.copy_(gu.transform_by_quat(self._world_z, self.tray_quat))
+                self.goal_pos.copy_(gu.transform_by_quat(self.goal_marker_offset, self.tray_quat) + self.tray_pos)
 
             if self.show_viewer:
                 self.goal_marker.set_pos(self.goal_pos)
@@ -723,10 +717,10 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         # Update tray caches after spawn.
         self.tray_pos[idx]      = self.tray.get_pos()[idx]
         self.tray_quat[idx]     = self.tray.get_quat()[idx]
-        self.tray_z_world[idx]  = _rotate_vec_by_quat(self._world_z[idx], self.tray_quat[idx])
+        self.tray_z_world[idx]  = gu.transform_by_quat(self._world_z[idx], self.tray_quat[idx])
         self._tray_init_pos[idx] = self.tray_pos[idx]
         self.goal_pos[idx]      = (
-            _rotate_vec_by_quat(self.goal_marker_offset[idx], self.tray_quat[idx])
+            gu.transform_by_quat(self.goal_marker_offset[idx], self.tray_quat[idx])
             + self.tray_pos[idx]
         )
         if self.show_viewer:
