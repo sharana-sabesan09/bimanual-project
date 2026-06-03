@@ -11,10 +11,11 @@ Obs     : (b, 147) — arm_pos(7) + arm_vel(7) + hand_pos(12) + hand_vel(12)
                       + hand_contact_forces(36) + total_contact_force(1)
                       + prev_actions(19)
 
-Reward is staged (curriculum_stage 1/2/3):
-  Stage 1 — contact count (fingers touching tray) + action smoothness
-  Stage 2 — + tray upright orientation
-  Stage 3 — + ball XY proximity + ball velocity penalty
+Reward (curriculum_stage 1/2/3):
+  All    — survival bonus + binary contact + contact streak + EE-tray velocity-mismatch penalty
+  Stage 1 — + ball-on-tray contact bonus
+  Stage 2 — + tray upright orientation (exponential, handles upside-down correctly)
+  Stage 3 — + ball XY proximity + ball velocity
 """
 
 import numpy as np
@@ -43,7 +44,9 @@ BALL_MASS      = 0.1   # kg
 # Default ~22 N resting → mass ≈ 2.2 kg (too heavy); 0.3 kg gives ~3 N resting.
 TRAY_MASS      = 0.3   # kg  ← change this to adjust tray weight
 
-GOAL_PADDING   = 0.03
+GOAL_PADDING       = 0.06   # keep goal spawn away from tray edges
+BALL_SPAWN_PADDING = 0.06   # extra edge clearance on top of BALL_RADIUS for ball spawn
+CONTACT_STREAK_CAP = 50.0   # consecutive-contact steps before streak bonus saturates
 
 LEFT_LEG_JOINTS = [
     "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
@@ -341,6 +344,10 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self.tray_z_world[:, 2] = 1.0
         self.ball_pos          = torch.zeros(self.n_envs, 3,  device=gs.device)
         self.ball_vel          = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.tray_vel          = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.ee_vel            = torch.zeros(self.n_envs, 3,  device=gs.device)
+        self.ball_on_tray      = torch.zeros(self.n_envs,     dtype=torch.bool,    device=gs.device)
+        self._contact_streak   = torch.zeros(self.n_envs,     dtype=torch.float32, device=gs.device)
         self.goal_pos          = torch.zeros(self.n_envs, 3,  device=gs.device)
         # goal_marker_offset is in tray local frame; rotated by tray_quat each step
         self.goal_marker_offset = torch.zeros(self.n_envs, 3,  device=gs.device)
@@ -413,8 +420,10 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             dtype=torch.long, device=gs.device,
         )
         # Global link indices for free-body entities (ints, used as direct dim-1 indices).
-        self._tray_link_idx = self.tray.base_link_idx
-        self._ball_link_idx = self.ball.base_link_idx
+        self._tray_link_idx    = self.tray.base_link_idx
+        self._ball_link_idx    = self.ball.base_link_idx
+        # Global index of the palm link — used to read EE velocity via _links_cdvel_tc.
+        self._palm_link_global = self._middle_proximal_link.idx_local + self.robot.link_start
 
     def _has_joint(self, name: str, joint_map: dict) -> bool:
         return name in joint_map
@@ -442,10 +451,12 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
                 self.hand_vel.copy_(_all_vel[:, self.n_arm_dofs:])
 
             with torch.profiler.record_function("env/post_physics/entity_reads"):
-                self.tray_pos.copy_(self._links_pos_tc[:,  self._tray_link_idx])
+                self.tray_pos.copy_(self._links_pos_tc[:,   self._tray_link_idx])
                 self.tray_quat.copy_(self._links_quat_tc[:, self._tray_link_idx])
-                self.ball_pos.copy_(self._links_pos_tc[:,  self._ball_link_idx])
+                self.tray_vel.copy_(self._links_cdvel_tc[:, self._tray_link_idx])
+                self.ball_pos.copy_(self._links_pos_tc[:,   self._ball_link_idx])
                 self.ball_vel.copy_(self._links_cdvel_tc[:, self._ball_link_idx])
+                self.ee_vel.copy_(  self._links_cdvel_tc[:, self._palm_link_global])
 
             with torch.profiler.record_function("env/post_physics/contact_forces"):
                 # Single call — tray-specific contacts only.
@@ -480,6 +491,14 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
                     self._tray_contact_force.zero_()
                     self.in_contact = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
                     self._hand_link_forces.zero_()
+
+            with torch.profiler.record_function("env/post_physics/ball_tray_contact"):
+                # Check ball↔tray contacts only — completely independent of robot contacts.
+                _btc = self.ball.get_contacts(with_entity=self.tray)
+                if "valid_mask" in _btc:
+                    self.ball_on_tray = _btc["valid_mask"].any(dim=-1)  # (n_envs,) bool
+                else:
+                    self.ball_on_tray = torch.zeros(self.n_envs, dtype=torch.bool, device=gs.device)
 
             with torch.profiler.record_function("env/post_physics/tray_kinematics"):
                 self.tray_z_world = _rotate_vec_by_quat(self._world_z, self.tray_quat)
@@ -566,12 +585,19 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
         with torch.profiler.record_function("env/compute_reward"):
-            # ── Stage 1: grasp contact ─────────────────────────────────────────
             with torch.profiler.record_function("env/reward/contact"):
-                r_contact = torch.clamp(self._tray_contact_force / 30.0, 0.0, 1.0)
-                # Raw boolean gate: any collision geometry between robot and tray this step.
-                # Ball rewards are fully on or fully off — no force threshold, no scaling.
                 contact_gate = self.in_contact.float()
+
+                # Penalise relative velocity between palm and tray while in contact.
+                # Peaks during hard flicks (v_ee large, v_tray near-zero); near-zero during
+                # stable hold (both velocities matched) or deliberate co-movement (both equal).
+                r_vel_mismatch = torch.norm(self.ee_vel - self.tray_vel, dim=-1) * contact_gate
+
+                # Smoothed consecutive-contact streak: increments every in-contact step,
+                # resets to 0 on any contact loss, saturates at CONTACT_STREAK_CAP.
+                # In-place to avoid allocation; returns self so clamp_ chains correctly.
+                self._contact_streak.add_(contact_gate).mul_(contact_gate).clamp_(max=CONTACT_STREAK_CAP)
+                r_contact_streak = self._contact_streak / CONTACT_STREAK_CAP
 
             with torch.profiler.record_function("env/reward/action_pen"):
                 r_action_pen = torch.norm(action_tensor - self.prev_actions, dim=-1)
@@ -579,7 +605,10 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             r_fall_pen = self.terminated.float()
 
             with torch.profiler.record_function("env/reward/upright"):
-                r_upright = self.tray_z_world[:, 2]
+                # exp(-(1-z)^2 * λ): 1.0 when z=1 (upright), monotonically decreases toward
+                # z=0 (horizontal, ≈0.018) and z=-1 (upside-down, ≈0).
+                # Unlike the raw z or XY-norm formulations, this has no false maximum at z=-1.
+                r_upright = torch.exp(-4.0 * (1.0 - self.tray_z_world[:, 2]) ** 2)
                 if self.debug:
                     z = self.tray_z_world[0]
                     print(
@@ -588,42 +617,52 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
                     )
 
             with torch.profiler.record_function("env/reward/ball"):
-                ball_dist  = torch.norm(self.ball_pos - self.goal_pos, dim=-1)
-                r_ball_pos = 1.0 / (1.0 + 5.0 * ball_dist)
-                r_ball_vel = 1.0 / (1.0 + torch.norm(self.ball_vel, dim=-1))
+                ball_dist      = torch.norm(self.ball_pos - self.goal_pos, dim=-1)
+                r_ball_pos     = 1.0 / (1.0 + 5.0 * ball_dist)
+                r_ball_vel     = 1.0 / (1.0 + torch.norm(self.ball_vel, dim=-1))
+                # Binary reward for ball physically touching the tray.  Gated by contact_gate
+                # to avoid rewarding a dropped tray sitting on the ground with the ball on it.
+                r_ball_on_tray = self.ball_on_tray.float() * contact_gate
 
-            w_contact    = 3.0  if self.curriculum_stage >= 1 else 0.0
-            w_in_contact = 1.0   # flat bonus every step any tray contact is active
-            w_upright    = 0.5  if self.curriculum_stage >= 2 else 0.0
-            w_ball_pos   = 1.5  if self.curriculum_stage >= 3 else 0.0
-            w_ball_vel   = 0.3  if self.curriculum_stage >= 3 else 0.0
-            w_action_pen = 0.01
-            w_fall_pen   = 10.0
+            w_survive        = 0.1
+            w_in_contact     = 1.0
+            w_contact_streak = 0.5
+            w_vel_mismatch   = 2.0
+            w_upright        = 0.5  if self.curriculum_stage >= 2 else 0.0
+            w_ball_pos       = 1.5  if self.curriculum_stage >= 3 else 0.0
+            w_ball_vel       = 0.3  if self.curriculum_stage >= 3 else 0.0
+            w_ball_contact   = 0.5  if self.curriculum_stage >= 1 else 0.0
+            w_action_pen     = 0.01
+            w_fall_pen       = 10.0
 
-            # TODO maybe try tray ball contact reward 
             final_reward = (
-                  w_contact    * r_contact
-                + w_in_contact * contact_gate
-                + w_upright    * r_upright  * contact_gate
-                + w_ball_pos   * r_ball_pos * contact_gate * r_upright.clamp(min=0.0)
-                + w_ball_vel   * r_ball_vel * contact_gate * r_upright.clamp(min=0.0)
-                - w_action_pen * r_action_pen
-                - w_fall_pen   * r_fall_pen
+                  w_survive
+                + w_in_contact     * contact_gate
+                + w_contact_streak * r_contact_streak
+                + w_upright        * r_upright    * contact_gate
+                + w_ball_contact   * r_ball_on_tray
+                + w_ball_pos       * r_ball_pos   * contact_gate * r_upright
+                + w_ball_vel       * r_ball_vel   * contact_gate * r_upright
+                - w_vel_mismatch   * r_vel_mismatch
+                - w_action_pen     * r_action_pen
+                - w_fall_pen       * r_fall_pen
             )
 
             self.prev_actions.copy_(action_tensor.detach())
 
             log = self.extras["log"]
-            log["r_contact"]       = r_contact.mean()
-            log["r_upright"]       = r_upright.mean()
-            log["r_ball_pos"]      = r_ball_pos.mean()
-            log["r_ball_vel"]      = r_ball_vel.mean()
-            log["r_action_pen"]    = r_action_pen.mean()
-            log["r_fall_pen"]      = r_fall_pen.mean()
-            log["tray_contact_N"]  = self._tray_contact_force.mean()
-            log["in_contact_frac"] = contact_gate.mean()
-            log["ball_dist"]       = ball_dist.mean()
-            log["tray_upright_z"]  = r_upright.mean()
+            log["r_upright"]        = r_upright.mean()
+            log["r_ball_pos"]       = r_ball_pos.mean()
+            log["r_ball_vel"]       = r_ball_vel.mean()
+            log["r_ball_on_tray"]   = r_ball_on_tray.mean()
+            log["r_contact_streak"] = r_contact_streak.mean()
+            log["r_vel_mismatch"]   = r_vel_mismatch.mean()
+            log["r_action_pen"]     = r_action_pen.mean()
+            log["r_fall_pen"]       = r_fall_pen.mean()
+            log["tray_contact_N"]   = self._tray_contact_force.mean()
+            log["in_contact_frac"]  = contact_gate.mean()
+            log["ball_dist"]        = ball_dist.mean()
+            log["tray_upright_z"]   = self.tray_z_world[:, 2].mean()
 
             return final_reward
 
@@ -699,11 +738,15 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
         self.ball_pos[idx] = self.ball.get_pos()[idx]
         self.ball_vel[idx] = 0.0
 
-        # Zero contact buffers for reset envs so the first obs of the new episode
-        # does not carry force values from the last frame of the previous episode.
+        # Zero contact/velocity/streak buffers for reset envs so the first obs of the
+        # new episode does not carry stale values from the previous episode.
         self._hand_link_forces[idx].zero_()
         self._tray_contact_force[idx] = 0.0
-        self.in_contact[idx] = False
+        self.in_contact[idx]          = False
+        self.tray_vel[idx]            = 0.0
+        self.ee_vel[idx]              = 0.0
+        self._contact_streak[idx]     = 0.0
+        self.ball_on_tray[idx]        = False
 
         # Build obs from fully-refreshed caches — no stale state from the previous episode.
         return self.get_obs(), {}
@@ -717,7 +760,7 @@ class SingleArmTrayGraspEnv(BaseVecEnv):
             tray_p = self.tray.get_pos()[idx]  # fresh read — cache may be pre-spawn
             b = tray_p.shape[0]
             half = torch.tensor(TRAY_HALF_SIZE[:2], device=gs.device)
-            xy_noise = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * (half - BALL_RADIUS)
+            xy_noise = (torch.rand(b, 2, device=gs.device) - 0.5) * 2 * (half - BALL_RADIUS - BALL_SPAWN_PADDING)
             ball_z   = tray_p[:, 2:3] + TRAY_HALF_SIZE[2] + BALL_RADIUS + 0.005
             self.ball.set_pos(
                 torch.cat([tray_p[:, :2] + xy_noise, ball_z], dim=-1),
