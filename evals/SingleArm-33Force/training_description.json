@@ -1,0 +1,15 @@
+{
+    "task": "BallBalance-SingleArm-v0",
+    "tray_density": 454.6,
+    "ball_mass": 0.1,
+    "ball_force": {
+        "toggle": "true",
+        "ball_force_frequency": 10,
+        "ball_force_period": 10,
+        "ball_force_max": 0.01
+    },
+    "goal_switch": "true",
+    "goal_switch_frequency": 1,
+    "goal_randomization": "true",
+    "force_limits": [8.33, 8.33, 8.33, 8.33, 8.33, 1.66, 1.66]
+}

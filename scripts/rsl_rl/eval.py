@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import statistics
+import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -85,7 +86,7 @@ def main():
 
     runner = OnPolicyRunner(env, train_cfg, str(checkpoint.parent), device=gs.device)
     
-    runner.load(checkpoint, map_location=torch.device("cpu"))
+    runner.load(checkpoint, map_location=torch.device("cpu"), strict=False)
     #runner.load(checkpoint)
     print(f"Loaded {checkpoint}")
     policy = runner.get_inference_policy(device=gs.device)
@@ -132,6 +133,18 @@ def main():
     average_dists = [statistics.fmean(distances) for distances in distances_from_goal_list]
     avg_dists_after_1_sec = [statistics.fmean(distances[100:]) for distances in distances_from_goal_list if len(distances) > 100]
     avg_iteration_length = statistics.mean(len(distances) for distances in distances_from_goal_list)
+
+    eval_dict = {
+        "full_trial_rate": float(full_trials/iterations),
+        "avg_dist_from_goal": statistics.fmean(average_dists),
+        "avg_dist_from_goal_1_sec": statistics.fmean(avg_dists_after_1_sec),
+        "avg_itn_len": float(avg_iteration_length),
+        "avg_settle_time": statistics.mean(settle_times),
+        "success_rate": float(successes/total_trials)
+    }
+
+    with open(checkpoint.parent/"eval.json", "w") as f:
+        f.write(json.dumps(eval_dict))
 
     print(f"EVALUATION STATS: \
           \n--------------------------------\
