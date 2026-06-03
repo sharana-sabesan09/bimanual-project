@@ -16,7 +16,7 @@ import gymnasium as gym
 from pathlib import Path
 from scipy.spatial.transform import Rotation as Rot
 import genesis.utils.geom as gu
-
+from genesis.utils.misc import qd_to_torch
 
 from source.tasks.base_env import BaseVecEnv
 
@@ -74,13 +74,6 @@ STAND_WAIST_POS = np.zeros(3, dtype=np.float32)
 STAND_LEFT_ARM_POS = np.array([0.2, 0.2, 0.0, 1.28, 0.0, 0.0, 0.0], dtype=np.float32)
 RIGHT_ARM_HOLD_POS = np.array([-0.7, -0.2, 0.0, 1.2, 0.0, -0.6, 0.0], dtype=np.float32)
 
-@torch.jit.script
-def transform_goal_pose(n_envs: int, goal_pos, goal_marker_offset, tray_pos, tray_quat):
-    for i in range(n_envs):
-        transform = gu._tc_transform_by_quat(goal_marker_offset[i], tray_quat[i]) + tray_pos[i]
-        #transform = gu.transform_by_trans_quat(goal_marker_offset[i], tray_pos[i], tray_quat[i])
-        goal_pos[i] = transform[:3]
-
 class SingleArmBallBalanceEnv(BaseVecEnv):
 
     def __init__(
@@ -114,7 +107,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
                 np.array(hold_pose_dr_scale, dtype=np.float32),
                 (len(RIGHT_ARM_JOINTS),),
             ).copy()
-        self.step_counter = torch.zeros(n_envs)
+        self.show_viewer = show_viewer
 
         super().__init__(
             show_viewer=show_viewer, n_envs=n_envs, max_episode_steps=max_episode_steps, dt=dt
@@ -160,8 +153,9 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
             + self._waist_dofs
             + self._left_arm_dofs
         )
-        self._frozen_pos = np.concatenate(
-            [STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS, STAND_LEFT_ARM_POS]
+        self._frozen_pos = torch.tensor(
+            np.concatenate([STAND_LEG_POS, STAND_LEG_POS, STAND_WAIST_POS, STAND_LEFT_ARM_POS]),
+            dtype=torch.float32, device=gs.device,
         )
 
         self._right_arm_hold_base = torch.tensor(
@@ -191,6 +185,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ee_target_rpy = torch.zeros(self.n_envs, 3, device=gs.device)
 
         self.prev_actions = torch.zeros(self.n_envs, self.n_arm_dofs, device=gs.device)
+        self.step_counter = torch.zeros(self.n_envs)  # CPU: torch.where on CPU avoids GPU sync
 
         # Cached physics state — populated by _post_physics_step each tick
         self.arm_pos = torch.zeros(self.n_envs, 7, device=gs.device)
@@ -198,7 +193,26 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self.ball_pos = torch.zeros(self.n_envs, 3, device=gs.device)
         self.ball_vel = torch.zeros(self.n_envs, 3, device=gs.device)
         self.goal_pos = torch.zeros(self.n_envs, 3, device=gs.device)
-        self.ball_force = torch.zeros(self.n_envs, 2, device=gs.device)
+        self.tray_pos = torch.zeros(self.n_envs, 3, device=gs.device)
+        self.tray_quat = torch.zeros(self.n_envs, 4, device=gs.device)
+        self.tray_quat[:, 0] = 1.0
+
+        self._obs_buf = torch.zeros(self.n_envs, 23, device=gs.device)
+
+        _solver = self.robot._solver
+        self._dof_pos_tc     = qd_to_torch(_solver.dofs_state.pos,   transpose=True, copy=False)
+        self._dof_vel_tc     = qd_to_torch(_solver.dofs_state.vel,   transpose=True, copy=False)
+        self._links_pos_tc   = qd_to_torch(_solver.links_state.pos,  transpose=True, copy=False)
+        self._links_quat_tc  = qd_to_torch(_solver.links_state.quat, transpose=True, copy=False)
+        self._links_cdvel_tc = qd_to_torch(_solver.links_state.cd_vel, transpose=True, copy=False)
+
+        self._right_arm_global = torch.tensor(
+            [self.robot._dof_start + d for d in self._right_arm_dofs],
+            dtype=torch.long, device=gs.device,
+        )
+        _tray_link = self.robot.get_link("tray")
+        self._tray_link_global = _tray_link.idx_local + self.robot.link_start
+        self._ball_link_idx    = self.ball.base_link_idx
 
         self.goal_marker_offset = torch.zeros(self.n_envs, 3, device=gs.device)
 
@@ -215,34 +229,29 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
             self.debug_dict = {"distance_from_goal": [[] for _ in range(self.n_envs)]}
 
     def _post_physics_step(self):
-        self.arm_pos = self.robot.get_dofs_position(dofs_idx_local=self._right_arm_dofs)
-        self.arm_vel = self.robot.get_dofs_velocity(dofs_idx_local=self._right_arm_dofs)
-        self.ball_pos = self.ball.get_pos()
-        self.ball_vel = self.ball.get_vel()
-        self.goal_pos = self.robot.get_link("tray").get_pos() + self.goal_marker_offset
-        self.tray_pos = self.robot.get_link("tray").get_pos()
-        self.tray_quat = self.robot.get_link("tray").get_quat()
-        transform_goal_pose(
-            self.n_envs, self.goal_pos, 
-            self.goal_marker_offset, self.tray_pos, self.tray_quat)
-    
-        self.goal_marker.set_pos(self.goal_pos)
+        self.arm_pos.copy_(self._dof_pos_tc[:, self._right_arm_global])
+        self.arm_vel.copy_(self._dof_vel_tc[:, self._right_arm_global])
+        self.ball_pos.copy_(self._links_pos_tc[:,  self._ball_link_idx])
+        self.ball_vel.copy_(self._links_cdvel_tc[:, self._ball_link_idx])
+        self.tray_pos.copy_(self._links_pos_tc[:,  self._tray_link_global])
+        self.tray_quat.copy_(self._links_quat_tc[:, self._tray_link_global])
+
+        self.goal_pos.copy_(gu.transform_by_quat(self.goal_marker_offset, self.tray_quat) + self.tray_pos)
+
+        if self.show_viewer:
+            self.goal_marker.set_pos(self.goal_pos)
         if self.goal_switching:
             goal_switch_period_idx = torch.where(
                 self.step_counter % GOAL_SWITCH_PERIOD == 0
             )[0]
             self._reset_goal_marker(envs_idx=goal_switch_period_idx)
 
-        ball_force_period_idx = torch.where(self.step_counter % BALL_FORCE_PERIOD == 0)[
-            0
-        ]
-        self._apply_random_ball_force(zero=True, envs_idx=ball_force_period_idx)
-        ball_force_frequency_idx = torch.where(
-            self.step_counter % BALL_FORCE_FREQUENCY == 0
-        )[0]
-        self._apply_random_ball_force(envs_idx=ball_force_frequency_idx)
-
-        self.ball_force = self.ball.get_dofs_force()[:, :2]
+        ball_force_period_idx = torch.where(self.step_counter % BALL_FORCE_PERIOD == 0)[0]
+        if len(ball_force_period_idx) > 0:
+            self._apply_random_ball_force(zero=True, envs_idx=ball_force_period_idx)
+        ball_force_frequency_idx = torch.where(self.step_counter % BALL_FORCE_FREQUENCY == 0)[0]
+        if len(ball_force_frequency_idx) > 0:
+            self._apply_random_ball_force(envs_idx=ball_force_frequency_idx)
 
         self.step_counter += 1
 
@@ -272,7 +281,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
             self.step_counter.zero_()
         else:
             self.prev_actions[envs_idx] = 0.0
-            self.step_counter[envs_idx] = 0
+            self.step_counter[envs_idx.cpu()] = 0
 
     def reset(self, envs_idx=None, seed=None, options=None):
         obs, info = super().reset(envs_idx=envs_idx, seed=seed, options=options)
@@ -314,10 +323,12 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         # IK endsection
 
     def get_obs(self) -> torch.Tensor:
-        return torch.cat(
-            [self.arm_pos, self.arm_vel, self.ball_pos, self.ball_vel, self.goal_pos],
-            dim=-1,
-        )
+        self._obs_buf[:, 0:7]   = self.arm_pos
+        self._obs_buf[:, 7:14]  = self.arm_vel
+        self._obs_buf[:, 14:17] = self.ball_pos
+        self._obs_buf[:, 17:20] = self.ball_vel
+        self._obs_buf[:, 20:23] = self.goal_pos
+        return self._obs_buf
 
     def get_termination(self):
         self.terminated = self.ball_pos[:, 2] < (self.goal_pos[:, 2] - 0.15)
@@ -421,7 +432,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         idx = (
             torch.arange(self.n_envs, device=gs.device)
             if envs_idx is None
-            else envs_idx
+            else envs_idx.to(gs.device)
         )
         b = idx.shape[0]
         xy_offset = (
@@ -438,12 +449,11 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
     def _apply_random_ball_force(self, zero=False, envs_idx=None):
         if self.ball_pushing is False:
             return
-        device = self.ball.get_pos().device
         b = envs_idx.shape[0]
         if zero:
-            force_array = torch.zeros(b, 6, device=device)
+            force_array = torch.zeros(b, 6, device=gs.device)
         else:
-            force_array = (torch.rand(b, 6, device=device) - 0.5) * 2 * BALL_MASS / 10
+            force_array = (torch.rand(b, 6, device=gs.device) - 0.5) * 2 * BALL_MASS / 10
 
         force_array[:, 2] = 0
 
