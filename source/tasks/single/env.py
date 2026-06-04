@@ -91,7 +91,7 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         force_multiple = 1,
         ball_mass = 0.1,
         debug_contacts=False,
-        hold_pose_dr_scale=[0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
+        hold_pose_dr_scale=None,
         model_path = "assets/mujoco_menagerie/unitree_g1/g1_single_arm.xml",
         dt=0.02,
     ):
@@ -350,23 +350,42 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         return self.terminated, self.truncated
 
     def _compute_reward(self, action_tensor: torch.Tensor) -> torch.Tensor:
-        xy_dist = torch.norm(self.ball_pos[:, :2] - self.goal_pos[:, :2], dim=-1)
-        proximity = torch.exp(-5.0 * xy_dist)
-        vel_pen = -0.05 * torch.norm(self.ball_vel, dim=-1)
-        action_pen = -0.0001 * torch.norm(action_tensor, dim=-1)
-        # smoothness_pen = -0.02  * torch.norm(action_tensor - self.prev_actions, dim=-1)
+        dist = torch.norm(self.ball_pos[:, :3] - self.goal_pos[:, :3], dim=-1)
+        proximity = torch.exp(-5.0 * dist)
+
+        vel_pen = torch.norm(self.ball_vel, dim=-1)
+        action_pen = torch.norm(action_tensor, dim=-1)
+
+        right_action = action_tensor[:, :7]
+
         fall_pen = torch.where(
-            self.terminated,
-            torch.full_like(proximity, -10.0),
-            torch.zeros_like(proximity),
+            self.terminated, torch.ones_like(proximity), torch.zeros_like(proximity)
         )
+
         self.prev_actions.copy_(action_tensor.detach())
+
+        # TODO tune weights 
+        # TODO add tray ball contact reward 
+        final_reward = (
+            5 * proximity
+            # penalties
+            - 0.05 * vel_pen
+            - 0.0001 * action_pen
+            - 10 * fall_pen
+        )
 
         if self.debug:
             for i in range(self.n_envs):
-                self.debug_dict["distance_from_goal"][i].append(float(xy_dist[i]))
+                self.debug_dict["distance_from_goal"][i].append(float(dist[i]))
 
-        return proximity + 0.2 + vel_pen + action_pen + fall_pen  # + smoothness_pen
+        log = self.extras["log"]
+        log["r_proximity"] = proximity.mean()
+        log["r_vel_pen"] = vel_pen.mean()
+        log["r_action_pen"] = action_pen.mean()
+        log["r_fall_pen"] = fall_pen.mean()
+        log["dist"] = dist.mean()
+
+        return final_reward
 
     def _return_and_reset_debug(self, env_idx):
         return_list = self.debug_dict["distance_from_goal"][env_idx].copy()

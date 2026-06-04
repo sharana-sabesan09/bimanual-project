@@ -1,1 +1,1 @@
-{"full_trial_rate": 0.5, "avg_dist_from_goal": 0.06366449527974041, "avg_dist_from_goal_1_sec": 0.046692341750975835, "avg_itn_len": 457.28, "avg_settle_time": 0.3841541755888651, "success_rate": 0.8329764453961456}
+{"category": "baseline", "full_trial_rate": 0.5399999618530273, "avg_dist_from_goal": 0.06115424964242631, "avg_dist_from_goal_1_sec": 0.047988850187210705, "avg_itn_len": 451.74, "avg_settle_time": 0.4098034934497817, "success_rate": 0.7838427947598253}

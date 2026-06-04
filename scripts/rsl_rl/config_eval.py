@@ -60,7 +60,7 @@ def main():
     training = {
         "task": "BallBalance-SingleArm-v0",
         "name": "single-baseline",
-        "category": "mass",
+        "category": "baseline",
         "num_envs": 10,
         "num_iterations": 100,
         "force_multiple": 1,
@@ -101,7 +101,8 @@ def main():
 
     raw_env = EnvClass(n_envs=training["num_envs"], show_viewer=False,
                 debug=True, ball_pushing=True, ball_mass = training["ball_mass"],
-                force_multiple=training["force_multiple"], model_path = training["model_path"]
+                force_multiple=training["force_multiple"], model_path = training["model_path"],
+                ball_vel_range=0.0,
                 )
     env = RslRlVecEnvWrapper(raw_env)
     runner = OnPolicyRunner(env, train_cfg, str(log_dir), device=gs.device)
