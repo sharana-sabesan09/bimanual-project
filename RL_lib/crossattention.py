@@ -17,7 +17,8 @@ class CrossAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, query, key, value):
-        attn_out, _ = self.attn(query, key, value, need_weights=False)
+        with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
+            attn_out, _ = self.attn(query, key, value, need_weights=False)
         return self.norm(query + self.dropout(attn_out))
     
 # uncomment this one otherwise
