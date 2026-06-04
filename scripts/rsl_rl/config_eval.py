@@ -58,15 +58,15 @@ def find_goal_settle_time(distances, settle_time=15, settle_range = 0.03):
 
 def main():
     training = {
-        "task": "BallBalance-DualArm-Attention-v0",
-        "name": "dual-mass-1",
+        "task": "BallBalance-SingleArm-v0",
+        "name": "single-baseline",
         "category": "mass",
         "num_envs": 10,
         "num_iterations": 100,
         "force_multiple": 1,
-        "ball_mass": 1,
-        "model_path": "training_files/density_models/g1_dual_arm_baseline.xml",
-        "checkpoint": "evals/DualArm-Attention-1Mass/model_499.pt" # relative path
+        "ball_mass": .1,
+        "model_path": "training_files/density_models/g1_single_arm_baseline.xml",
+        "checkpoint": "evals/single-baseline/model_499.pt" # relative path
     }
 
     try:

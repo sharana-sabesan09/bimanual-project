@@ -1,0 +1,45 @@
+--- git commit ---
+f6b87a4ac3739f323b89b3b7d106da9dfca993e2
+
+
+--- git status ---
+On branch evals
+Your branch is up to date with 'origin/evals'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   scripts/rsl_rl/config_train.py
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/scripts/rsl_rl/config_train.py b/scripts/rsl_rl/config_train.py
+index ac36ddc..d4cf442 100644
+--- a/scripts/rsl_rl/config_train.py
++++ b/scripts/rsl_rl/config_train.py
+@@ -48,13 +48,13 @@ def _resolve(entry_point: str):
+ 
+ def main():
+     training = {
+-        "task": "BallBalance-DualArm-Attention-v0",
+-        "name": "dual-density-2k",
++        "task": "BallBalance-SingleArm-v0",
++        "name": "single-baseline",
+         "num_envs": 2048,
+         "max_iterations": 500,
+         "force_multiple": 1,
+         "ball_mass": .1,
+-        "model_path": "training_files/density_models/g1_dual_arm_2000.xml",
++        "model_path": "training_files/density_models/g1_single_arm_baseline.xml",       
+     }
+ 
+     try:
+@@ -101,4 +101,4 @@ def main():
+     print("FINISHED TRAINING")
+ 
+ if __name__ == "__main__":
+-    main()
+\ No newline at end of file
++    main()
