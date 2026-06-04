@@ -59,14 +59,14 @@ def find_goal_settle_time(distances, settle_time=15, settle_range = 0.03):
 def main():
     training = {
         "task": "BallBalance-DualArm-Attention-v0",
-        "name": "dual-density-2k",
+        "name": "dual-density-4k",
         "category": "density",
         "num_envs": 10,
         "num_iterations": 100,
-        "force_multiple": 1,
-        "ball_mass": .3,
+        "force_multiple": 100,
+        "ball_mass": .5,
         "model_path": "training_files/density_models/g1_dual_arm_baseline.xml",
-        "checkpoint": "evals/DualArm-Attention-0.3Mass/model_499.pt" # relative path
+        "checkpoint": "evals/DualArm-Attention-0.5Mass/model_500.pt" # relative path
     }
 
     try:
@@ -99,7 +99,7 @@ def main():
     with open(log_dir / "train_cfg.pkl", "wb") as f:
         pickle.dump(train_cfg, f)
 
-    raw_env = EnvClass(n_envs=training["num_envs"], show_viewer=False,
+    raw_env = EnvClass(n_envs=training["num_envs"], show_viewer=True,
                 debug=True, ball_pushing=True, ball_mass = training["ball_mass"],
                 force_multiple=training["force_multiple"], model_path = training["model_path"]
                 )
@@ -120,9 +120,10 @@ def main():
             actions = policy(obs)
             pre_step = env.episode_length_buf
             obs, _, dones, _ = env.step(actions)
+            print("Test")
             if torch.any(env.episode_length_buf == 499):
                 full_trials += 1
-            # print(f"Dones is {dones}")
+            print(f"Dones is {dones}")
             iterations += dones.sum(dim=-1)
             done_indices = dones.nonzero()
             # print(f"Done Indices: {done_indices}")
