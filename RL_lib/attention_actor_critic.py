@@ -65,11 +65,8 @@ class AttentionActor(MLPModel):
         self.norm_r = nn.LayerNorm(self.token_dim)
         self.norm_b = nn.LayerNorm(self.token_dim)
 
-        self.head = nn.Sequential(
-            nn.Linear(3 * self.token_dim, 256),
-            act,
-            nn.Linear(256, output_dim)
-        )
+    def _get_latent_dim(self) -> int:
+        return 3 * self.token_dim
 
     def _tok(self, x):
         return x.unsqueeze(1)
@@ -94,13 +91,11 @@ class AttentionActor(MLPModel):
         right = self.norm_r(right)
         ball = self.norm_b(ball)
 
-        z = torch.cat([
+        return torch.cat([
             left.squeeze(1),
             right.squeeze(1),
             ball.squeeze(1)
         ], dim=-1)
-
-        return self.head(z)
 
 class AttentionCritic(MLPModel):
     """Critic matching Felix's bidirectional cross-attention architecture.
