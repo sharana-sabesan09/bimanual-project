@@ -49,12 +49,12 @@ def _resolve(entry_point: str):
 def main():
     training = {
         "task": "BallBalance-DualArm-Attention-v0",
-        "name": "dual-density-2k",
+        "name": "felix-attn-mass-p1",
         "num_envs": 2048,
         "max_iterations": 500,
         "force_multiple": 1,
-        "ball_mass": .1,
-        "model_path": "training_files/density_models/g1_dual_arm_2000.xml",
+        "ball_mass": 0.1,
+        "model_path": "training_files/density_models/g1_dual_arm_baseline.xml",
     }
 
     try:
