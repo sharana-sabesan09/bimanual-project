@@ -90,8 +90,9 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         force_limits = True,
         force_multiple = 1,
         ball_mass = 0.1,
+        debug_contacts=False,
         hold_pose_dr_scale=[0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
-        model_path = "assets/mujoco_menagerie/unitree_g1/g1_single_arm.xml"
+        model_path = "assets/mujoco_menagerie/unitree_g1/g1_single_arm.xml",
         dt=0.02,
     ):
         self.goal_switch_period = GOAL_SWITCH_PERIOD
@@ -337,7 +338,11 @@ class SingleArmBallBalanceEnv(BaseVecEnv):
         self._obs_buf[:, 14:17] = self.ball_pos
         self._obs_buf[:, 17:20] = self.ball_vel
         self._obs_buf[:, 20:23] = self.goal_pos
-        return self._obs_buf
+        # Must return a fresh tensor: rsl-rl stores transition.observations by
+        # reference in act() and only copies it into storage after the next
+        # env.step(). Handing out the reused _obs_buf would let the next step
+        # overwrite it in place, storing s_{t+1} against the action for s_t.
+        return self._obs_buf.clone()
 
     def get_termination(self):
         self.terminated = self.ball_pos[:, 2] < (self.goal_pos[:, 2] - 0.15)

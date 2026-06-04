@@ -326,7 +326,11 @@ class DualArmBallBalanceEnv(BaseVecEnv):
         self._obs_buf[:, 28:31] = self.ball_pos
         self._obs_buf[:, 31:34] = self.ball_vel
         self._obs_buf[:, 34:37] = self.goal_pos
-        return self._obs_buf
+        # Must return a fresh tensor: rsl-rl stores transition.observations by
+        # reference in act() and only copies it into storage after the next
+        # env.step(). Handing out the reused _obs_buf would let the next step
+        # overwrite it in place, storing s_{t+1} against the action for s_t.
+        return self._obs_buf.clone()
 
     def get_termination(self):
         self.terminated = self.ball_pos[:, 2] < (self.goal_pos[:, 2] - 0.15)
