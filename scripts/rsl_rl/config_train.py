@@ -49,7 +49,7 @@ def _resolve(entry_point: str):
 def main():
     training = {
         "task": "BallBalance-DualArm-Attention-v0",
-        "name": "felix-attn-mass-p1",
+        "name": "dual-baseline",
         "num_envs": 2048,
         "max_iterations": 500,
         "force_multiple": 1,

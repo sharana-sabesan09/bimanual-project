@@ -153,7 +153,7 @@ def plot_influence_breakdown(runs, output_dir):
 
 
 def plot_raw_influence(runs, output_dir):
-    """Raw L2 norm values split into arm-to-arm (solid) and arm-to-ball (dashed) subplots."""
+    """Raw L2 norm values for all 6 relationships over training."""
     iter_runs = {k: v for k, v in runs.items() if extract_iter(k) is not None}
     if not iter_runs:
         print("No iteration-labelled runs. Skipping raw influence plot.")
@@ -162,41 +162,20 @@ def plot_raw_influence(runs, output_dir):
     iters = sorted(iter_runs.keys(), key=extract_iter)
     x = [extract_iter(k) for k in iters]
 
-    # solid lines — arm-to-arm relationships
-    arm_to_arm = {
-        "l_to_r": ("#4C72B0", "Left arm → Right arm"),
-        "r_to_l": ("#DD8452", "Right arm → Left arm"),
-        "b_to_l": ("#55A868", "Ball → Left arm"),
-        "b_to_r": ("#8172B2", "Ball → Right arm"),
-    }
-    # dashed lines — arm-to-ball relationships
-    arm_to_ball = {
-        "l_to_b": ("#4C72B0", "Left arm → Ball"),
-        "r_to_b": ("#DD8452", "Right arm → Ball"),
-    }
+    colors = ["#4C72B0", "#4C72B0", "#DD8452", "#DD8452", "#55A868", "#55A868"]
+    styles = ["-", "--", "-", "--", "-", "--"]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle("Raw Attention Influence Over Training", fontsize=13, fontweight="bold")
-
-    # Left subplot — arm-to-arm (solid)
-    for name, (color, label) in arm_to_arm.items():
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for i, name in enumerate(ATTN_LABELS):
         y = [iter_runs[k][name] for k in iters]
-        ax1.plot(x, y, marker="o", color=color, linewidth=2, linestyle="-", label=label)
-    ax1.set_title("Arm ↔ Arm  (solid lines)", fontsize=11, fontweight="bold")
-    ax1.set_xlabel("Training Iteration", fontsize=11)
-    ax1.set_ylabel("L2 Norm of Attention Output", fontsize=11)
-    ax1.legend(fontsize=9)
-    ax1.grid(alpha=0.3)
+        ax.plot(x, y, marker="o", color=colors[i], linestyle=styles[i],
+                linewidth=2, label=ATTN_DESCRIPTIONS[name])
 
-    # Right subplot — arm-to-ball (dashed)
-    for name, (color, label) in arm_to_ball.items():
-        y = [iter_runs[k][name] for k in iters]
-        ax2.plot(x, y, marker="s", color=color, linewidth=2, linestyle="--", label=label)
-    ax2.set_title("Arm → Ball  (dashed lines)", fontsize=11, fontweight="bold")
-    ax2.set_xlabel("Training Iteration", fontsize=11)
-    ax2.set_ylabel("L2 Norm of Attention Output", fontsize=11)
-    ax2.legend(fontsize=9)
-    ax2.grid(alpha=0.3)
+    ax.set_xlabel("Training Iteration", fontsize=12)
+    ax.set_ylabel("L2 Norm of Attention Output", fontsize=12)
+    ax.set_title("Raw Attention Influence Over Training", fontsize=13, fontweight="bold")
+    ax.legend(fontsize=9, ncol=2)
+    ax.grid(alpha=0.3)
 
     plt.tight_layout()
     out = Path(output_dir) / "raw_influence.png"
